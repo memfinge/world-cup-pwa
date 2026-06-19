@@ -236,47 +236,109 @@ def evaluate_tactical_matchups(match: Match) -> Optional[Dict[str, Any]]:
         except Exception:
             return None
     return None
+def get_final_scores() -> Dict[str, str]:
+    """
+    Scrapes the data source to get final scores for completed matches.
+    Returns a dictionary mapping match_id to a score string (e.g., "1-2").
+    """
+    final_scores = {}
+    try:
+        with open("mock_lineups.html", "r") as f:
+            soup = BeautifulSoup(f, "html.parser")
+        
+        match_containers = soup.find_all('div', class_='match-container')
+        for container in match_containers:
+            if container.has_attr('data-final-score'):
+                match_id = container['data-match-id']
+                score = container['data-final-score']
+                final_scores[match_id] = score
+        return final_scores
+    except Exception:
+        # Silently fail if scraping scores fails, as it's a non-critical part of the sync
+        return {}
+
+def determine_settlement_status(slip: LedgerEntry, match: Match, final_score_str: str) -> LedgerStatus:
+    """
+    Determines the outcome of a bet based on the final score.
+    """
+    try:
+        home_score_str, away_score_str = final_score_str.split('-')
+        home_score = int(home_score_str)
+        away_score = int(away_score_str)
+
+        if slip.market_type == "Moneyline":
+            if home_score > away_score:
+                winner = match.home_team
+            elif away_score > home_score:
+                winner = match.away_team
+            else:
+                winner = "Draw"
+            
+            return LedgerStatus.WON if slip.selection == winner else LedgerStatus.LOST
+
+        elif slip.market_type == "BTTS": # Both Teams To Score
+            is_btts = home_score > 0 and away_score > 0
+            if slip.selection == "Yes":
+                return LedgerStatus.WON if is_btts else LedgerStatus.LOST
+            elif slip.selection == "No":
+                return LedgerStatus.WON if not is_btts else LedgerStatus.LOST
+
+        # Add more market type settlement logic here in the future
+
+    except (ValueError, IndexError):
+        # If score is malformed, cannot determine status
+        return LedgerStatus.PENDING
+
+    return LedgerStatus.PENDING # Default to pending if no logic matches
 
 def audit_pending_ledger() -> None:
     """
-    Audits historical 'Pending' records against a mock final score.
-    In a real app, this would fetch final scores from a reliable API.
+    Audits historical 'Pending' records against final scores and settles them.
     """
     st.write("`[Ledger]` Auditing pending slips...")
     try:
-        response = supabase.table("ledger").select("*").eq("status", LedgerStatus.PENDING).execute()
-        pending_slips = response.data
+        final_scores = get_final_scores()
+        if not final_scores:
+            st.info("No final scores found to audit against.")
+            return
+
+        pending_slips_resp = supabase.table("ledger").select("*, matches(*)").eq("status", LedgerStatus.PENDING).execute()
+        pending_slips = pending_slips_resp.data
+
         if not pending_slips:
             st.info("No pending ledger entries to audit.")
             return
 
-        # MOCK: Assume all pending Mexico vs SK bets are now settled.
-        # Let's pretend South Korea won 2-1.
+        settled_count = 0
         for slip_data in pending_slips:
             slip = LedgerEntry.model_validate(slip_data)
+            match_data = slip_data.get('matches')
             
-            # Mock settlement logic
-            final_status = LedgerStatus.LOST
-            if slip.selection == "South Korea":
-                final_status = LedgerStatus.WON
-            
-            # Calculate net return
-            net_return = 0.0
-            if final_status == LedgerStatus.WON:
-                if slip.base_odds > 0:
-                    net_return = slip.unit_risk * (slip.base_odds / 100.0)
-                else:
-                    net_return = slip.unit_risk * (100.0 / abs(slip.base_odds))
-            elif final_status == LedgerStatus.LOST:
-                net_return = -slip.unit_risk
+            if not match_data or slip.match_id not in final_scores:
+                continue # Skip if match data is missing or match is not yet final
 
-            # Update the record in Supabase
-            supabase.table("ledger").update({
-                "status": final_status.value,
-                "net_return": round(net_return, 2)
-            }).eq("slip_id", slip.slip_id).execute()
-        
-        st.success(f"Audited and settled {len(pending_slips)} pending slip(s).")
+            match = Match.model_validate(match_data)
+            final_score = final_scores[slip.match_id]
+            final_status = determine_settlement_status(slip, match, final_score)
+
+            if final_status in [LedgerStatus.WON, LedgerStatus.LOST]:
+                net_return = 0.0
+                if final_status == LedgerStatus.WON:
+                    if slip.base_odds > 0: net_return = slip.unit_risk * (slip.base_odds / 100.0)
+                    else: net_return = slip.unit_risk * (100.0 / abs(slip.base_odds))
+                elif final_status == LedgerStatus.LOST:
+                    net_return = -slip.unit_risk
+
+                supabase.table("ledger").update({
+                    "status": final_status.value,
+                    "net_return": round(net_return, 2)
+                }).eq("slip_id", slip.slip_id).execute()
+                settled_count += 1
+
+        if settled_count > 0:
+            st.success(f"Audited and settled {settled_count} pending slip(s).")
+        else:
+            st.info("Audit complete. No new results to settle.")
 
     except Exception as e:
         st.error(f"Error during ledger audit: {e}")
