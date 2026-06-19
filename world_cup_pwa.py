@@ -157,7 +157,7 @@ def scrape_and_update_match_data():
             st.toast(f"Successfully scraped and updated {len(scraped_matches)} matches.")
 
         if scraped_odds:
-            supabase.table("odds").upsert([o.model_dump(mode='json', exclude={'id'}) for o in scraped_odds]).execute()
+            supabase.table("odds").upsert([o.model_dump(mode='json', exclude={'id'}) for o in scraped_odds], on_conflict="match_id,market_type,selection").execute()
             st.toast(f"Successfully scraped and updated {len(scraped_odds)} market odds.")
 
     except FileNotFoundError:
