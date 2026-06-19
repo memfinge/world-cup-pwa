@@ -95,13 +95,14 @@ supabase = get_supabase_client()
 
 # --- 4. CORE APPLICATION LOGIC & PIPELINE ---
 
-def scrape_and_update_lineups():
+def scrape_and_update_match_data():
     """
-    Scrapes lineup data from a source, parses it, and updates the database.
+    Scrapes lineup and odds data from a source, parses it, and updates the database.
     NOTE: This function currently reads from a local HTML file for demonstration.
     To scrape a live website, replace the file reading with requests.get(url).
     """
     scraped_matches = []
+    scraped_odds = []
     try:
         # In a real scenario:
         # headers = {'User-Agent': 'Mozilla/5.0 ...'}
@@ -129,6 +130,17 @@ def scrape_and_update_lineups():
             home_lineup = [li.text.strip() for li in home_lineup_tags]
             away_lineup = [li.text.strip() for li in away_lineup_tags]
 
+            market_tags = container.select('.markets .market')
+            for market in market_tags:
+                odds_obj = Odds(
+                    match_id=match_id,
+                    market_type=market['data-type'],
+                    selection=market['data-selection'],
+                    # Convert odds string like "+105" or "-110" to integer
+                    dk_odds=int(market['data-odds'])
+                )
+                scraped_odds.append(odds_obj)
+
             match_obj = Match(
                 match_id=match_id,
                 kickoff_time=datetime.now(timezone.utc), # In a real app, this would be scraped too
@@ -143,6 +155,10 @@ def scrape_and_update_lineups():
         if scraped_matches:
             supabase.table("matches").upsert([m.model_dump(mode='json') for m in scraped_matches]).execute()
             st.toast(f"Successfully scraped and updated {len(scraped_matches)} matches.")
+
+        if scraped_odds:
+            supabase.table("odds").upsert([o.model_dump(mode='json', exclude={'id'}) for o in scraped_odds]).execute()
+            st.toast(f"Successfully scraped and updated {len(scraped_odds)} market odds.")
 
     except FileNotFoundError:
         st.error("`mock_lineups.html` not found. Please create it to run the scraper.")
@@ -277,8 +293,8 @@ def execute_sync_pipeline():
             audit_pending_ledger()
 
             # Step 1: Scrape active lineups and update the database
-            status.update(label="Scraping active lineups...")
-            scrape_and_update_lineups()
+            status.update(label="Scraping live match data...")
+            scrape_and_update_match_data()
 
             # Step 2: Fetch all confirmed matches from DB for evaluation
             status.update(label="Fetching confirmed matches from database...")
