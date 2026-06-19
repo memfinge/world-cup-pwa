@@ -1,0 +1,7 @@
+streamlit
+python-dotenv
+pydantic
+strenum
+supabase
+requests
+beautifulsoup4
