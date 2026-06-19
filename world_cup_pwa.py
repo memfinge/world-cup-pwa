@@ -153,11 +153,11 @@ def scrape_and_update_match_data():
             scraped_matches.append(match_obj)
 
         if scraped_matches:
-            supabase.table("matches").upsert([m.model_dump(mode='json') for m in scraped_matches]).execute()
+            supabase.table("matches").upsert([m.model_dump(mode='json', exclude={'updated_at'}) for m in scraped_matches]).execute()
             st.toast(f"Successfully scraped and updated {len(scraped_matches)} matches.")
 
         if scraped_odds:
-            supabase.table("odds").upsert([o.model_dump(mode='json', exclude={'id'}) for o in scraped_odds], on_conflict="match_id,market_type,selection").execute()
+            supabase.table("odds").upsert([o.model_dump(mode='json', exclude={'id', 'updated_at'}) for o in scraped_odds], on_conflict="match_id,market_type,selection").execute()
             st.toast(f"Successfully scraped and updated {len(scraped_odds)} market odds.")
 
     except FileNotFoundError:
@@ -476,7 +476,7 @@ def render_conviction_card(pick: Dict[str, Any]):
                 unit_risk=unit_risk_value,
                 status=LedgerStatus.PENDING
             )
-            supabase.table("ledger").insert(new_slip.model_dump(mode='json')).execute()
+            supabase.table("ledger").insert(new_slip.model_dump(mode='json', exclude={'net_return', 'created_at'})).execute()
             st.success(f"Logged: {pick['selection']} @ {pick['base_odds']}")
             # Clear picks so we don't log duplicates
             st.session_state.conviction_picks = []
