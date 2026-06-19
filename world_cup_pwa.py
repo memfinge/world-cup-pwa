@@ -64,6 +64,7 @@ class LedgerEntry(BaseModel):
     """Pydantic model for the 'ledger' table."""
     slip_id: str
     match_id: str
+    market_type: str
     selection: str
     base_odds: int
     unit_risk: float = Field(..., ge=0.01, le=10.0) # Example: 0.01 to 10.00 units
@@ -471,6 +472,7 @@ def render_conviction_card(pick: Dict[str, Any]):
             new_slip = LedgerEntry(
                 slip_id=str(uuid.uuid4()),
                 match_id=pick['match_id'],
+                market_type=pick['market_type'],
                 selection=pick['selection'],
                 base_odds=pick['base_odds'],
                 unit_risk=unit_risk_value,
