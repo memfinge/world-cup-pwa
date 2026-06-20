@@ -27,6 +27,83 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+# Inject Custom Glassmorphic Dark-Mode Stylesheet at script startup to keep it persistent
+st.markdown("""
+<style>
+/* Base Theme & Gradient Background */
+.stApp {
+    background: linear-gradient(135deg, #0b0f19, #1b172b, #090a0f) !important;
+    color: #e2e8f0 !important;
+}
+
+/* Glassmorphism Containers for expanders and cards */
+div[data-testid="stExpander"], div[data-testid="element-container"] > div[style*="border"] {
+    background: rgba(30, 41, 59, 0.45) !important;
+    backdrop-filter: blur(12px) !important;
+    -webkit-backdrop-filter: blur(12px) !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    border-radius: 12px !important;
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.25) !important;
+    transition: all 0.3s ease !important;
+    margin-bottom: 12px !important;
+}
+
+/* Interactive Card Hover Transition */
+div[data-testid="stExpander"]:hover, div[data-testid="element-container"] > div[style*="border"]:hover {
+    border-color: rgba(99, 102, 241, 0.35) !important;
+    box-shadow: 0 12px 40px 0 rgba(99, 102, 241, 0.12) !important;
+    transform: translateY(-2px) !important;
+}
+
+/* Typography Custom Fonts and Gradients */
+h1, h2, h3 {
+    color: #ffffff !important;
+    font-family: 'Outfit', 'Inter', sans-serif !important;
+    font-weight: 700 !important;
+}
+
+h1 {
+    background: linear-gradient(to right, #818cf8, #c084fc, #e879f9) !important;
+    -webkit-background-clip: text !important;
+    -webkit-text-fill-color: transparent !important;
+    padding-bottom: 0.2em !important;
+    font-size: 2.25rem !important;
+}
+
+/* Premium Buttons Styling */
+button {
+    background: linear-gradient(90deg, #4f46e5, #7c3aed) !important;
+    color: #ffffff !important;
+    border: none !important;
+    border-radius: 8px !important;
+    padding: 0.5rem 1.0rem !important;
+    font-weight: 600 !important;
+    box-shadow: 0 4px 12px 0 rgba(99, 102, 241, 0.3) !important;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+button:hover {
+    background: linear-gradient(90deg, #4338ca, #6d28d9) !important;
+    box-shadow: 0 6px 18px 0 rgba(99, 102, 241, 0.5) !important;
+    transform: translateY(-1px) !important;
+}
+
+/* Form Controls & Inputs Styling */
+input, select, textarea {
+    background-color: rgba(15, 23, 42, 0.5) !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    color: #f1f5f9 !important;
+    border-radius: 8px !important;
+}
+
+/* Metric Display Values */
+div[data-testid="stMetricValue"] {
+    font-weight: 800 !important;
+    color: #38bdf8 !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 # --- 2. ENUMS AND DATA MODELS (with Pydantic for validation) ---
 
 class LineupStatus(StrEnum):
@@ -1531,83 +1608,6 @@ def execute_sync_pipeline():
 
 def render_main_dashboard():
     """Renders the main application dashboard after successful authentication."""
-    # Inject Custom Glassmorphic Dark-Mode Stylesheet
-    st.markdown("""
-<style>
-/* Base Theme & Gradient Background */
-.stApp {
-    background: linear-gradient(135deg, #0b0f19, #1b172b, #090a0f) !important;
-    color: #e2e8f0 !important;
-}
-
-/* Glassmorphism Containers for expanders and cards */
-div[data-testid="stExpander"], div[data-testid="element-container"] > div[style*="border"] {
-    background: rgba(30, 41, 59, 0.45) !important;
-    backdrop-filter: blur(12px) !important;
-    -webkit-backdrop-filter: blur(12px) !important;
-    border: 1px solid rgba(255, 255, 255, 0.08) !important;
-    border-radius: 12px !important;
-    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.25) !important;
-    transition: all 0.3s ease !important;
-    margin-bottom: 12px !important;
-}
-
-/* Interactive Card Hover Transition */
-div[data-testid="stExpander"]:hover, div[data-testid="element-container"] > div[style*="border"]:hover {
-    border-color: rgba(99, 102, 241, 0.35) !important;
-    box-shadow: 0 12px 40px 0 rgba(99, 102, 241, 0.12) !important;
-    transform: translateY(-2px) !important;
-}
-
-/* Typography Custom Fonts and Gradients */
-h1, h2, h3 {
-    color: #ffffff !important;
-    font-family: 'Outfit', 'Inter', sans-serif !important;
-    font-weight: 700 !important;
-}
-
-h1 {
-    background: linear-gradient(to right, #818cf8, #c084fc, #e879f9) !important;
-    -webkit-background-clip: text !important;
-    -webkit-text-fill-color: transparent !important;
-    padding-bottom: 0.2em !important;
-    font-size: 2.25rem !important;
-}
-
-/* Premium Buttons Styling */
-button {
-    background: linear-gradient(90deg, #4f46e5, #7c3aed) !important;
-    color: #ffffff !important;
-    border: none !important;
-    border-radius: 8px !important;
-    padding: 0.5rem 1.0rem !important;
-    font-weight: 600 !important;
-    box-shadow: 0 4px 12px 0 rgba(99, 102, 241, 0.3) !important;
-    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
-}
-
-button:hover {
-    background: linear-gradient(90deg, #4338ca, #6d28d9) !important;
-    box-shadow: 0 6px 18px 0 rgba(99, 102, 241, 0.5) !important;
-    transform: translateY(-1px) !important;
-}
-
-/* Form Controls & Inputs Styling */
-input, select, textarea {
-    background-color: rgba(15, 23, 42, 0.5) !important;
-    border: 1px solid rgba(255, 255, 255, 0.08) !important;
-    color: #f1f5f9 !important;
-    border-radius: 8px !important;
-}
-
-/* Metric Display Values */
-div[data-testid="stMetricValue"] {
-    font-weight: 800 !important;
-    color: #38bdf8 !important;
-}
-</style>
-""", unsafe_allow_html=True)
-
     st.title("WC Data Dashboard")
 
     # Load matches from DB on startup if not already in session state
