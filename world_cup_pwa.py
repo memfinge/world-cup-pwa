@@ -1461,7 +1461,10 @@ ANALYSIS TASKS:
    - Use this style analysis to refine ALL your Total Goals, BTTS, Corners, and Spread recommendations.
 10. Fair value: For each recommended selection, estimate your calculated "true odds" using all above data.
 11. Recommend ALL positive-EV selections. For Promo/Boost, compare boosted odds vs your true odds.
-12. If 2+ correlated value picks exist, construct an SGP with `"market_type": "SGP"`, `"legs"` list, and estimated `"base_odds"`.
+12. If 2+ value picks exist, evaluate whether combining them into an SGP makes betting sense:
+    - Only construct an SGP if the legs have a strong positive correlation (e.g. Under 2.5 and Underdog Spread) such that the parlay offers a correlation edge (i.e. winning one leg significantly increases the probability of winning the other).
+    - Do NOT construct an SGP if the picks are uncorrelated (e.g. an anytime goalscorer from team A and under corners), negatively correlated, or simply stack redundant risk on the same game script without a clear mathematical correlation advantage.
+    - The rationale for the SGP MUST explain the correlation dynamics and why doubling down in a parlay makes betting sense for this specific matchup.
 13. Conviction level: "High" (multiple confirming signals from different sections), "Medium" (1-2 signals), "Low" (single signal or borderline).
 14. For each pick, populate `"research_summary"` with 2-3 bullet points citing the SPECIFIC data that drove the recommendation.
 
