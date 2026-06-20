@@ -4,6 +4,7 @@ import os
 import uuid
 import json
 import urllib.parse
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, date
 from typing import List, Optional, Dict, Any
@@ -302,7 +303,9 @@ def generate_content_with_fallback(api_key: str, prompt: str, json_mode: bool = 
             last_error = err
             err_str = str(err)
             print(f"[DEBUG] Model {model_name} failed: {err_str[:200]}")
-            # Continue trying fallback models on rate limits, quota limits, model not found, etc.
+            if "429" in err_str or "quota" in err_str.lower() or "limit" in err_str.lower():
+                print("[DEBUG] Rate limit/quota error detected. Sleeping 2 seconds before fallback...")
+                time.sleep(2.0)
             continue
                 
     if last_error:
@@ -703,7 +706,11 @@ def try_grounded_generation(prompt: str, api_key: str) -> Optional[str]:
                 print(f"[DEBUG] Grounding succeeded with model: {model_name}")
                 return response.text.strip()
         except Exception as e:
-            print(f"[DEBUG] Grounding attempt failed ({model_name}): {str(e)[:120]}")
+            err_str = str(e)
+            print(f"[DEBUG] Grounding attempt failed ({model_name}): {err_str[:120]}")
+            if "429" in err_str or "quota" in err_str.lower() or "limit" in err_str.lower():
+                print("[DEBUG] Rate limit/quota error detected in grounding. Sleeping 2 seconds before fallback...")
+                time.sleep(2.0)
             continue
 
     return None
