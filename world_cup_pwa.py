@@ -2328,15 +2328,19 @@ def render_main_dashboard():
                     if match_id in st.session_state.conviction_picks:
                         res_data = st.session_state.conviction_picks[match_id]
                         
-                        # Handle old session state list format gracefully to avoid crashes
-                        if isinstance(res_data, list):
+                        # Handle None or old session state formats gracefully to avoid crashes
+                        if res_data is None:
+                            picks = []
+                            injuries = {}
+                            key_battle = ""
+                        elif isinstance(res_data, list):
                             picks = res_data
                             injuries = {}
                             key_battle = ""
                         else:
-                            picks = res_data.get("recommendations", [])
-                            injuries = res_data.get("injuries", {})
-                            key_battle = res_data.get("key_battle", "")
+                            picks = res_data.get("recommendations", []) or []
+                            injuries = res_data.get("injuries", {}) or {}
+                            key_battle = res_data.get("key_battle", "") or ""
                             
                         # Filter out already-logged picks using the batched ledger dict
                         logged_selections = _ledger_by_match.get(match_id, set())
