@@ -2191,6 +2191,16 @@ def render_main_dashboard():
                     (_item["selection"].lower(), _item["market_type"].lower())
                 )
 
+            # Batch sandbox odds fetch once — filter client-side per match
+            _match_ids = [m.match_id for m in day_matches]
+            try:
+                _all_odds = supabase.table("odds").select("id, match_id, market_type, selection, dk_odds").in_("match_id", _match_ids).execute().data
+            except Exception:
+                _all_odds = []
+            _odds_by_match: Dict[str, list] = {}
+            for _o in _all_odds:
+                _odds_by_match.setdefault(_o["match_id"], []).append(_o)
+
             for match in day_matches:
                 match_id = match.match_id
                 
@@ -2248,12 +2258,8 @@ def render_main_dashboard():
                         st.markdown("---")
                         st.subheader("📈 Odds Sandbox Override")
                         
-                        # Retrieve odds for this match from the database
-                        try:
-                            odds_resp = supabase.table("odds").select("id, market_type, selection, dk_odds").eq("match_id", match_id).execute()
-                            match_odds = odds_resp.data
-                        except Exception:
-                            match_odds = []
+                        # Retrieve odds for this match from the batched dictionary
+                        match_odds = _odds_by_match.get(match_id, [])
                             
                         updated_odds_dict = {}
                         if not match_odds:
