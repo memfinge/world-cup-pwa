@@ -461,18 +461,235 @@ def get_wikipedia_matches() -> List[Dict[str, Any]]:
                 score = score.replace('\u2013', '-').replace('\u2212', '-').replace('\xa0', ' ').strip()
                 
             kickoff_utc = parse_time_local_as_utc(date_str, time_raw)
-            
+
+            # Parse venue/city if available in the football box
+            venue_city = ""
+            fground = box.find(class_="fground") or box.find(class_="venue")
+            if fground:
+                venue_city = fground.get_text().strip().replace('\n', ' ').strip()
+
             parsed.append({
                 "date": date_str,
                 "home_team": home_team,
                 "away_team": away_team,
                 "kickoff_time": kickoff_utc,
-                "score": score
+                "score": score,
+                "venue_city": venue_city
             })
         return parsed
     except Exception as e:
         print(f"[DEBUG] Error scraping Wikipedia matches: {e}")
         return []
+
+
+# --- WC 2026 Venue → GPS coordinates for weather lookups ---
+WC_2026_VENUES: Dict[str, tuple] = {
+    "at&t stadium": ("Arlington, TX, USA", 32.747, -97.094),
+    "sofi stadium": ("Inglewood, CA, USA", 33.953, -118.339),
+    "metlife stadium": ("East Rutherford, NJ, USA", 40.813, -74.074),
+    "hard rock stadium": ("Miami Gardens, FL, USA", 25.958, -80.239),
+    "levi's stadium": ("Santa Clara, CA, USA", 37.403, -121.970),
+    "arrowhead stadium": ("Kansas City, MO, USA", 39.049, -94.484),
+    "lincoln financial field": ("Philadelphia, PA, USA", 39.901, -75.168),
+    "gillette stadium": ("Foxborough, MA, USA", 42.091, -71.264),
+    "lumen field": ("Seattle, WA, USA", 47.595, -122.332),
+    "bc place": ("Vancouver, BC, Canada", 49.277, -123.112),
+    "bmo field": ("Toronto, ON, Canada", 43.633, -79.419),
+    "estadio azteca": ("Mexico City, Mexico", 19.303, -99.151),
+    "estadio akron": ("Guadalajara, Mexico", 20.688, -103.467),
+    "estadio bbva": ("Monterrey, Mexico", 25.669, -100.247),
+    # City fallbacks
+    "arlington": ("Arlington, TX, USA", 32.747, -97.094),
+    "inglewood": ("Inglewood, CA, USA", 33.953, -118.339),
+    "los angeles": ("Los Angeles, CA, USA", 34.052, -118.244),
+    "new york": ("East Rutherford, NJ, USA", 40.813, -74.074),
+    "miami": ("Miami Gardens, FL, USA", 25.958, -80.239),
+    "santa clara": ("Santa Clara, CA, USA", 37.403, -121.970),
+    "kansas city": ("Kansas City, MO, USA", 39.049, -94.484),
+    "philadelphia": ("Philadelphia, PA, USA", 39.901, -75.168),
+    "boston": ("Foxborough, MA, USA", 42.091, -71.264),
+    "seattle": ("Seattle, WA, USA", 47.595, -122.332),
+    "vancouver": ("Vancouver, BC, Canada", 49.277, -123.112),
+    "toronto": ("Toronto, ON, Canada", 43.633, -79.419),
+    "mexico city": ("Mexico City, Mexico", 19.303, -99.151),
+    "guadalajara": ("Guadalajara, Mexico", 20.688, -103.467),
+    "monterrey": ("Monterrey, Mexico", 25.669, -100.247),
+}
+
+
+def get_weather_context(venue_city: str, match_date: str) -> str:
+    """
+    Fetches match-day weather forecast from OpenMeteo (free, no API key required).
+    Looks up venue GPS from WC_2026_VENUES dict and returns a formatted context string.
+    """
+    if not venue_city:
+        return ""
+    try:
+        venue_lower = venue_city.lower()
+        match_info = None
+        # Exact then partial match against venue dict
+        for key, val in WC_2026_VENUES.items():
+            if key in venue_lower or venue_lower in key:
+                match_info = val
+                break
+        if not match_info:
+            return f"Weather: Venue '{venue_city}' not mapped to coordinates."
+
+        city_label, lat, lon = match_info
+        url = "https://api.open-meteo.com/v1/forecast"
+        params = {
+            "latitude": lat,
+            "longitude": lon,
+            "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum,windspeed_10m_max,weathercode",
+            "timezone": "auto",
+            "start_date": match_date,
+            "end_date": match_date
+        }
+        resp = requests.get(url, params=params, timeout=8)
+        if resp.status_code != 200:
+            return ""
+
+        data = resp.json()
+        daily = data.get("daily", {})
+        temp_max_c = daily.get("temperature_2m_max", [None])[0]
+        temp_min_c = daily.get("temperature_2m_min", [None])[0]
+        precip = daily.get("precipitation_sum", [None])[0] or 0
+        wind = daily.get("windspeed_10m_max", [None])[0] or 0
+        wcode = daily.get("weathercode", [0])[0] or 0
+
+        wcode_map = {
+            0: "Clear sky", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
+            45: "Foggy", 48: "Icy fog",
+            51: "Light drizzle", 53: "Moderate drizzle", 55: "Heavy drizzle",
+            61: "Light rain", 63: "Moderate rain", 65: "Heavy rain",
+            71: "Light snow", 73: "Moderate snow", 75: "Heavy snow",
+            80: "Rain showers", 81: "Heavy showers", 82: "Violent showers",
+            95: "Thunderstorm", 96: "Thunderstorm w/ hail", 99: "Severe thunderstorm",
+        }
+        condition = wcode_map.get(wcode, "Unknown")
+
+        # Convert C to F
+        def c_to_f(c):
+            return round((c * 9 / 5) + 32, 1) if c is not None else "N/A"
+
+        impacts = []
+        if wind > 30:
+            impacts.append(f"HIGH WIND ({wind:.0f}km/h) — expect fewer corners and suppressed total goals")
+        elif wind > 20:
+            impacts.append(f"Moderate wind ({wind:.0f}km/h) — may slightly affect aerial play")
+        if precip > 3:
+            impacts.append(f"RAIN EXPECTED ({precip:.1f}mm) — historically reduces total goals by ~0.3 and corners by ~1")
+        elif precip > 0.5:
+            impacts.append(f"Light precipitation ({precip:.1f}mm) — minor playing surface impact")
+        temp_max_f = c_to_f(temp_max_c)
+        if isinstance(temp_max_f, float) and temp_max_f > 90:
+            impacts.append(f"HIGH HEAT ({temp_max_f}°F) — may impact player stamina in second half")
+
+        impact_str = "; ".join(impacts) if impacts else "Standard conditions — no major weather factor"
+
+        return (
+            f"Venue: {venue_city} ({city_label})\n"
+            f"Conditions: {condition}\n"
+            f"Temp: {c_to_f(temp_min_c)}°F – {temp_max_f}°F\n"
+            f"Precipitation: {precip:.1f}mm | Wind: {wind:.0f}km/h\n"
+            f"Betting Impact: {impact_str}"
+        )
+    except Exception as e:
+        print(f"[DEBUG] OpenMeteo weather fetch failed: {e}")
+        return ""
+
+
+def get_form_and_h2h_context(home_team: str, away_team: str) -> str:
+    """
+    Runs targeted searches for team recent form, H2H history, xG/stats, and referee data.
+    Uses DuckDuckGo news+text with Yahoo fallback. Returns a structured context string.
+    """
+    queries = [
+        (f"{home_team} last 5 matches results goals 2026", "HOME TEAM RECENT FORM (Last 5)"),
+        (f"{away_team} last 5 matches results goals 2026", "AWAY TEAM RECENT FORM (Last 5)"),
+        (f"{home_team} vs {away_team} head to head history all time record", "HEAD-TO-HEAD HISTORY"),
+        (f"{home_team} {away_team} expected goals xG shots statistics World Cup 2026", "xG & UNDERLYING STATS"),
+        (f"referee appointed {home_team} vs {away_team} World Cup 2026 official", "REFEREE TENDENCIES"),
+    ]
+
+    full_context = ""
+    for query, label in queries:
+        snippets = ""
+        # Try DDG news first, then DDG text
+        try:
+            from duckduckgo_search import DDGS
+            with DDGS() as ddgs:
+                results = list(ddgs.news(query, max_results=3))
+                if not results:
+                    results = list(ddgs.text(query, max_results=3))
+                for r in results:
+                    body = r.get('body') or r.get('description') or r.get('snippet', '')
+                    snippets += f"  • {r.get('title', '')}: {body}\n"
+        except Exception:
+            pass
+
+        # Fallback to Yahoo News
+        if len(snippets.strip()) < 40:
+            try:
+                import urllib.parse
+                url = f"https://news.search.yahoo.com/search?p={urllib.parse.quote(query)}"
+                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+                resp = requests.get(url, headers=headers, timeout=8)
+                if resp.status_code == 200:
+                    soup = BeautifulSoup(resp.text, 'html.parser')
+                    for item in soup.find_all("div", class_="NewsArticle")[:3]:
+                        title_tag = item.find("h4") or item.find("a")
+                        snippet_tag = item.find("p") or item.find(class_="compText")
+                        if title_tag:
+                            snippets += f"  • {title_tag.get_text().strip()}: {snippet_tag.get_text().strip() if snippet_tag else ''}\n"
+            except Exception:
+                pass
+
+        if snippets:
+            full_context += f"\n[{label}]\n{snippets}"
+
+    return full_context.strip()
+
+
+def try_grounded_generation(prompt: str, api_key: str) -> Optional[str]:
+    """
+    Attempts to use Google Search Grounding for real-time web research during generation.
+    Tries Gemini 2.0/2.5 models with grounding enabled, with a 25-second timeout.
+    Returns None on any failure so the caller can fall back to manual DDG search.
+    """
+    genai.configure(api_key=api_key)
+    grounding_models = ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-2.0-flash-exp']
+
+    for model_name in grounding_models:
+        try:
+            # Build grounding tool — try new google_search API first, fall back to retrieval
+            try:
+                tool = genai.protos.Tool(google_search=genai.protos.GoogleSearch())
+            except Exception:
+                try:
+                    tool = genai.protos.Tool(
+                        google_search_retrieval=genai.protos.GoogleSearchRetrieval()
+                    )
+                except Exception:
+                    continue
+
+            model = genai.GenerativeModel(
+                model_name=model_name,
+                tools=[tool],
+                generation_config={"temperature": 0.0}
+            )
+            response = model.generate_content(
+                prompt,
+                request_options={"timeout": 25}
+            )
+            if response and response.text:
+                print(f"[DEBUG] Grounding succeeded with model: {model_name}")
+                return response.text.strip()
+        except Exception as e:
+            print(f"[DEBUG] Grounding attempt failed ({model_name}): {str(e)[:120]}")
+            continue
+
+    return None
 
 
 def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = ""):
@@ -1043,14 +1260,32 @@ Guidelines:
             return
 
         # Clear existing matches and odds for this target date to prevent duplicates/stale data
+        # But first snapshot existing odds for line movement detection
+        line_movement_data: Dict[str, int] = {}
         try:
             matches_to_del = supabase.table("matches").select("match_id").filter("kickoff_time", "gte", f"{target_date_iso}T00:00:00+00:00").filter("kickoff_time", "lte", f"{target_date_iso}T23:59:59+00:00").execute()
             ids_to_del = [m['match_id'] for m in matches_to_del.data]
             if ids_to_del:
+                # Snapshot current odds BEFORE deleting (line movement baseline)
+                existing_odds_resp = supabase.table("odds").select("match_id,market_type,selection,dk_odds").in_("match_id", ids_to_del).execute()
+                for o in existing_odds_resp.data:
+                    key = f"{o['match_id']}|{o['market_type']}|{o['selection']}"
+                    line_movement_data[key] = o['dk_odds']
+                print(f"[DEBUG] Snapshotted {len(line_movement_data)} existing odds for line movement detection.")
                 supabase.table("odds").delete().in_("match_id", ids_to_del).execute()
                 supabase.table("matches").delete().in_("match_id", ids_to_del).execute()
         except Exception as db_err:
             print(f"[DEBUG] Failed to clear matches/odds for {target_date_iso}: {db_err}")
+
+        # Store line movement snapshot and venue map in session state for use by evaluation
+        st.session_state['line_movement_data'] = line_movement_data
+
+        # Build a venue map from the wikipedia matches for this date
+        venue_map = {}
+        for m in day_matches:
+            key = f"{m['home_team']}|{m['away_team']}"
+            venue_map[key] = m.get('venue_city', '')
+        st.session_state['venue_map'] = venue_map
 
         # Insert discovered matches and odds into the Supabase database
         valid_matches = []
@@ -1109,141 +1344,203 @@ def calculate_parlay_odds(odds_list: list[int]) -> int:
 
 def evaluate_tactical_matchups_ai(match: Match, api_key: str) -> Optional[Dict[str, Any]]:
     """
-    Evaluates tactical matchups by performing real-time DuckDuckGo news search and feeding the context to Gemini.
+    Evaluates tactical matchups with comprehensive multi-source research:
+    - Google Search Grounding (with DDG/Yahoo fallback)
+    - Team recent form, H2H history, xG/stats, referee data
+    - Venue weather from OpenMeteo
+    - Line movement detection
     """
     if not api_key:
         return None
-        
+
     try:
-        # 1. Perform DuckDuckGo news search, falling back to Yahoo News on rate limit or failure
+        # --- 1. Retrieve live market odds from database ---
+        odds_resp = supabase.table("odds").select("*").eq("match_id", match.match_id).execute()
+        odds_data = odds_resp.data
+        if not odds_data:
+            return None
+        valid_options_str = "\n".join(
+            [f"- Selection: '{o['selection']}' | Market Type: '{o['market_type']}'" for o in odds_data]
+        )
+
+        # --- 2. Line movement context (from sync snapshot) ---
+        line_movement_data = st.session_state.get('line_movement_data', {})
+        line_movement_str = ""
+        if line_movement_data:
+            movements = []
+            for o in odds_data:
+                key = f"{o['match_id']}|{o['market_type']}|{o['selection']}"
+                old_odds = line_movement_data.get(key)
+                if old_odds is not None and old_odds != o['dk_odds']:
+                    delta = o['dk_odds'] - old_odds
+                    direction = "▲ SHARPER" if delta < 0 else "▼ LONGER"
+                    movements.append(
+                        f"  {o['market_type']}: {o['selection']} moved {old_odds:+d} → {o['dk_odds']:+d} ({direction}, Δ{delta:+d})"
+                    )
+            if movements:
+                line_movement_str = "\n".join(movements)
+                print(f"[DEBUG] Detected {len(movements)} line movement(s) for {match.match_id}")
+
+        # --- 3. Venue weather context ---
+        match_date_str = match.kickoff_time.strftime("%Y-%m-%d")
+        venue_map = st.session_state.get('venue_map', {})
+        venue_city = venue_map.get(f"{match.home_team}|{match.away_team}", "")
+        weather_str = get_weather_context(venue_city, match_date_str) if venue_city else ""
+        print(f"[DEBUG] Weather context for {match.match_id}: {weather_str[:80] if weather_str else 'N/A'}")
+
+        # --- 4. Form, H2H, xG, referee context ---
+        print(f"[DEBUG] Fetching form/H2H/xG/referee context for {match.home_team} vs {match.away_team}...")
+        extended_research = get_form_and_h2h_context(match.home_team, match.away_team)
+
+        # --- 5. General match news (DDG/Yahoo) ---
         raw_research = ""
         try:
             from duckduckgo_search import DDGS
             with DDGS() as ddgs:
-                query = f"{match.home_team} vs {match.away_team} world cup 2026 team news"
+                query = f"{match.home_team} vs {match.away_team} world cup 2026 team news injuries"
                 results = list(ddgs.news(query, max_results=5))
                 if not results:
-                    query = f"{match.home_team} vs {match.away_team} football"
-                    results = list(ddgs.news(query, max_results=5))
-                
+                    results = list(ddgs.news(f"{match.home_team} vs {match.away_team} football", max_results=5))
                 for r in results:
-                    raw_research += f"Title: {r.get('title')}\nSource: {r.get('source')}\nSnippet: {r.get('body')}\n\n"
+                    raw_research += f"  • {r.get('title')}: {r.get('body', '')}\n"
         except Exception as ddg_err:
-            raw_research = f"DuckDuckGo News failed: {ddg_err}"
-            
-        # Fallback to Yahoo News search if DDG failed or returned empty
-        if not raw_research or "failed" in raw_research.lower():
-            print(f"[DEBUG] DuckDuckGo search failed or rate-limited. Falling back to Yahoo News...")
+            print(f"[DEBUG] DDG news failed: {ddg_err}")
+
+        # Fallback to Yahoo News
+        if len(raw_research.strip()) < 50:
             try:
                 import urllib.parse
                 query = f"{match.home_team} vs {match.away_team} world cup 2026 team news"
                 url = f"https://news.search.yahoo.com/search?p={urllib.parse.quote(query)}"
-                headers = {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                }
+                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
                 resp = requests.get(url, headers=headers, timeout=10)
                 if resp.status_code == 200:
                     soup = BeautifulSoup(resp.text, 'html.parser')
-                    items = soup.find_all("div", class_="NewsArticle")
-                    yahoo_results = ""
-                    for item in items[:5]:
+                    for item in soup.find_all("div", class_="NewsArticle")[:5]:
                         title_tag = item.find("h4") or item.find("a")
-                        if not title_tag:
-                            continue
-                        title = title_tag.get_text().strip()
                         snippet_tag = item.find("p") or item.find(class_="compText")
-                        snippet = snippet_tag.get_text().strip() if snippet_tag else ""
-                        yahoo_results += f"Title: {title}\nSnippet: {snippet}\n\n"
-                    
-                    if yahoo_results:
-                        raw_research = yahoo_results
+                        if title_tag:
+                            raw_research += f"  • {title_tag.get_text().strip()}: {snippet_tag.get_text().strip() if snippet_tag else ''}\n"
             except Exception as yahoo_err:
-                print(f"[DEBUG] Yahoo News search failed: {yahoo_err}")
-            
-        # model instantiation skipped, using generate_content_with_fallback directly below
-        
-        # Retrieve all odds for this match from the database
-        odds_resp = supabase.table("odds").select("*").eq("match_id", match.match_id).execute()
-        odds_data = odds_resp.data
-        
-        if not odds_data:
-            return None
-            
-        valid_options_str = "\n".join([f"- Selection: '{o['selection']}' | Market Type: '{o['market_type']}'" for o in odds_data])
-        
+                print(f"[DEBUG] Yahoo News fallback failed: {yahoo_err}")
+
+        # --- 6. Build structured prompt ---
         prompt = f"""
-You are an expert sports bettor, tactical analyst, and oddsmaker.
-Use the web news research snippets, team lineups, and live market odds below to evaluate the upcoming World Cup matchup: {match.home_team} vs {match.away_team}.
-Analyze the matchup and provide one or more value betting recommendations if the data supports them. All bet types (Moneyline, BTTS, Total Goals, Spread, Corners, Anytime Goalscorer, Player Shots, Player Shots on Target, Promo/Boost, SGP) are on the table.
+You are an elite sports betting analyst, oddsmaker, and tactical football expert.
+Your task: evaluate the World Cup 2026 match {match.home_team} vs {match.away_team} using ALL data sections below.
+For EVERY recommendation, explicitly cite which section(s) of data most influenced it.
+All bet types are on the table: Moneyline, BTTS, Total Goals, Spread, Corners, Anytime Goalscorer, Player Shots, Player Shots on Target, Promo/Boost, SGP.
 
-Confirmed Lineups:
-- {match.home_team} Lineup: {", ".join(match.home_lineup)}
-- {match.away_team} Lineup: {", ".join(match.away_lineup)}
-
-Live Market Odds:
+══════════════════════════════════════════
+[SECTION 1: LIVE ODDS & LINE MOVEMENT]
+══════════════════════════════════════════
+Current DraftKings Odds:
 {json.dumps(odds_data, indent=2)}
 
-Valid Options (You MUST choose your selection and market_type from this list exactly):
+Line Movement Since Last Sync (sharp money indicator):
+{line_movement_str if line_movement_str else "No prior snapshot available (first sync or no change)."}
+NOTE: Lines moving shorter (more negative) WITHOUT proportional public volume = sharp/professional money. This is a HIGH-VALUE signal.
+
+══════════════════════════════════════════
+[SECTION 2: CONFIRMED LINEUPS]
+══════════════════════════════════════════
+{match.home_team}: {", ".join(match.home_lineup) if match.home_lineup else 'Not yet confirmed'}
+{match.away_team}: {", ".join(match.away_lineup) if match.away_lineup else 'Not yet confirmed'}
+
+══════════════════════════════════════════
+[SECTION 3: TEAM FORM, H2H HISTORY, xG & REFEREE]
+══════════════════════════════════════════
+{extended_research if extended_research else 'No extended research data retrieved.'}
+
+══════════════════════════════════════════
+[SECTION 4: MATCH NEWS & INJURY INTEL]
+══════════════════════════════════════════
+{raw_research if raw_research else 'No match news retrieved — use your knowledge base.'}
+
+══════════════════════════════════════════
+[SECTION 5: VENUE & WEATHER CONDITIONS]
+══════════════════════════════════════════
+{weather_str if weather_str else 'Venue/weather data not available for this match.'}
+NOTE: Wind > 30km/h suppresses corners and total goals. Rain > 3mm reduces total goals ~0.3. Heat > 90°F impacts second-half intensity.
+
+══════════════════════════════════════════
+[VALID BETTING OPTIONS — USE EXACTLY]
+══════════════════════════════════════════
 {valid_options_str}
 
-Web News Search Results:
-{raw_research}
+══════════════════════════════════════════
+ANALYSIS TASKS:
+══════════════════════════════════════════
+1. Injuries & absences: Extract from Section 3/4 or your knowledge base for both teams.
+2. Key tactical battle: Identify the single most decisive unit or player matchup.
+3. Form analysis: Use Section 3 form data. Which team has momentum? Any goal-scoring droughts?
+4. H2H patterns: Does historical record suggest a tendency (e.g., low-scoring, home team dominant)?
+5. xG/stats analysis: If underlying data shows a team scores fewer goals than expected or concedes fewer, weight this toward Total Goals/BTTS markets.
+6. Weather impact: If Section 5 shows adverse conditions (wind, rain), adjust corners/totals recommendations accordingly.
+7. Line movement: If any line moved sharper (Section 1), presume sharp action — consider fading public or following the sharp side.
+8. Referee tendency: If referee data suggests high card rates, note potential impact on bookings markets.
+9. Fair value: For each recommended selection, estimate your calculated "true odds" using all above data.
+10. Recommend ALL positive-EV selections. For Promo/Boost, compare boosted odds vs your true odds.
+11. If 2+ correlated value picks exist, construct an SGP with `"market_type": "SGP"`, `"legs"` list, and estimated `"base_odds"`.
+12. Conviction level: "High" (multiple confirming signals from different sections), "Medium" (1-2 signals), "Low" (single signal or borderline).
+13. For each pick, populate `"research_summary"` with 2-3 bullet points citing the SPECIFIC data that drove the recommendation.
 
-If the search results above are empty or unrelated, evaluate based on your internal knowledge of the teams, their tactical style, relative strength, and expected key players.
-
-Task:
-1. Extract any known injuries, suspensions, or absences for both teams from the news results or your knowledge base.
-2. Identify the single most critical tactical battle on the pitch (e.g. specific player matchups or unit battles).
-3. Analyze the lineups, recent form, team news, and tactical matchups.
-4. Estimate the fair value ("true odds") for the selections.
-5. Compare true odds with the live market odds (dk_odds). For any "Promo/Boost" market, evaluate whether the boosted odds offer positive expected value (+EV) compared to your estimated true odds for that outcome (e.g., if true odds of Isak scoring are +220, and the boosted promo odds are +300, it is a clear +EV recommendation).
-6. Recommend any and all selections from the live market odds where you estimate positive value (i.e. the live odds are higher/better than your calculated true odds, meaning you get paid more than the true risk suggests).
-7. If there are multiple correlated value selections within the match that represent positive value (e.g., a team to win and a player to score), you may also output a Same Game Parlay (SGP) recommendation in the `recommendations` list. For an SGP recommendation: set `market_type` to 'SGP'; set `selection` to a descriptive combined name (e.g. 'Germany to Win + Florian Wirtz to Score'); include a `"legs"` field which is a list of leg objects, each containing `"selection"` and `"market_type"` matching the individual selections from the live market odds exactly; estimate the bookmaker's SGP odds and set it as `"base_odds"`; estimate your calculated true odds for this SGP combination and set it as `"true_odds"`.
-8. For each recommendation, rate your conviction level as either "High", "Medium", or "Low".
-9. Summarize 2-3 key findings/facts that informed your decision.
-10. Format your output strictly as a JSON object matching this schema:
+Return ONLY a valid JSON object matching this schema:
 {{
   "injuries": {{
-    "home_team_absences": [
-      {{
-        "player": "Player Name",
-        "status": "Out" | "Questionable" | "Doubtful",
-        "reason": "Brief description of injury or suspension (e.g., Hamstring injury)"
-      }}
-    ],
-    "away_team_absences": [
-      {{
-        "player": "Player Name",
-        "status": "Out" | "Questionable" | "Doubtful",
-        "reason": "Brief description of injury or suspension"
-      }}
-    ]
+    "home_team_absences": [{{
+      "player": "Name",
+      "status": "Out|Questionable|Doubtful",
+      "reason": "reason"
+    }}],
+    "away_team_absences": [{{
+      "player": "Name",
+      "status": "Out|Questionable|Doubtful",
+      "reason": "reason"
+    }}]
   }},
-  "key_battle": "A concise 1-2 sentence description of the key tactical battle on the pitch",
+  "key_battle": "1-2 sentence tactical battle description",
   "recommendations": [
     {{
-      "selection": "string matching the 'selection' field from one of the live odds OR a combined SGP description",
-      "market_type": "string matching the 'market_type' from one of the live odds OR 'SGP'",
-      "true_odds": integer representing your valued odds (e.g. 250 or -150),
-      "rationale": "A concise explanation (2-3 sentences) detailing the tactical mismatch/research facts that support this value",
-      "conviction": "High" | "Medium" | "Low",
-      "research_summary": ["bullet 1", "bullet 2"],
-      "legs": [
-        {{
-          "selection": "leg selection string matching the 'selection' from live odds exactly",
-          "market_type": "leg market_type string matching the 'market_type' from live odds exactly"
-        }}
-      ],
-      "base_odds": integer representing estimated bookmaker SGP odds (only required when market_type is 'SGP')
+      "selection": "exact selection string from valid options",
+      "market_type": "exact market_type from valid options OR 'SGP'",
+      "true_odds": integer,
+      "rationale": "2-3 sentence explanation citing specific data sections",
+      "conviction": "High|Medium|Low",
+      "research_summary": ["data-backed bullet 1", "data-backed bullet 2"],
+      "legs": [{{
+        "selection": "leg selection matching live odds exactly",
+        "market_type": "leg market_type matching live odds exactly"
+      }}],
+      "base_odds": integer
     }}
   ]
 }}
-If no selections represent positive value, return an empty list for "recommendations".
+If no value exists anywhere, return `"recommendations": []`.
 """
-        content = generate_content_with_fallback(api_key, prompt, json_mode=True)
-        
+        # --- 7. Try Google Search Grounding first; fall back to standard generation ---
+        content = None
+        grounding_used = False
+        try:
+            grounded_result = try_grounded_generation(prompt, api_key)
+            if grounded_result:
+                content = grounded_result
+                grounding_used = True
+        except Exception as grounding_err:
+            print(f"[DEBUG] Grounding wrapper error: {grounding_err}")
+
+        if not content:
+            print(f"[DEBUG] Using standard generation (grounding unavailable or failed).")
+            content = generate_content_with_fallback(api_key, prompt, json_mode=True)
+
+        # Build enriched raw_research string for display in UI
+        raw_research_display = ""
+        if grounding_used:
+            raw_research_display = "[Google Search Grounding Active — AI searched the web in real-time]\n\n"
+        raw_research_display += f"[MATCH NEWS]\n{raw_research}\n\n[FORM / H2H / xG / REFEREE]\n{extended_research}\n\n[WEATHER]\n{weather_str}\n\n[LINE MOVEMENT]\n{line_movement_str or 'None detected'}"
+
         # Print the raw content to your terminal for easy debugging
-        print(f"\n--- [DEBUG] Gemini Raw Response for {match.match_id} ---")
+        print(f"\n--- [DEBUG] Gemini Raw Response for {match.match_id} (grounding={grounding_used}) ---")
         print(content)
         print("----------------------------------------------------\n")
         
@@ -1324,7 +1621,7 @@ If no selections represent positive value, return an empty list for "recommendat
                     "rationale": rec.get("rationale"),
                     "conviction": rec.get("conviction", "Medium"),
                     "research_summary": rec.get("research_summary", []),
-                    "raw_research": raw_research,
+                    "raw_research": raw_research_display,
                     "legs": validated_legs,
                     "is_taxed": False
                 }
@@ -1353,7 +1650,7 @@ If no selections represent positive value, return an empty list for "recommendat
                     "rationale": rec.get("rationale"),
                     "conviction": rec.get("conviction", "Medium"),
                     "research_summary": rec.get("research_summary", []),
-                    "raw_research": raw_research,
+                    "raw_research": raw_research_display,
                     "is_taxed": False
                 }
                 
