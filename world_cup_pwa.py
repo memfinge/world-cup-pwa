@@ -3,6 +3,8 @@
 import os
 import uuid
 import json
+import urllib.parse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, date
 from typing import List, Optional, Dict, Any
 
@@ -414,6 +416,7 @@ def parse_time_local_as_utc(date_str: str, time_str: str) -> datetime:
     return dt.replace(tzinfo=timezone.utc)
 
 
+@st.cache_data(ttl=1800)
 def get_wikipedia_matches() -> List[Dict[str, Any]]:
     """
     Scrapes the 2026 World Cup page from Wikipedia, parsing all 104 matches.
@@ -602,7 +605,7 @@ def get_weather_context(venue_city: str, match_date: str) -> str:
 def get_form_and_h2h_context(home_team: str, away_team: str) -> str:
     """
     Runs targeted searches for team recent form, H2H history, xG/stats, and referee data.
-    Uses DuckDuckGo news+text with Yahoo fallback. Returns a structured context string.
+    All queries run in parallel via ThreadPoolExecutor for speed.
     """
     queries = [
         (f"{home_team} last 5 matches results goals 2026", "HOME TEAM RECENT FORM (Last 5)"),
@@ -614,10 +617,9 @@ def get_form_and_h2h_context(home_team: str, away_team: str) -> str:
         (f"{away_team} tactical style formation system pressing World Cup 2026", "AWAY TACTICAL STYLE"),
     ]
 
-    full_context = ""
-    for query, label in queries:
+    def _fetch_one(args):
+        query, label = args
         snippets = ""
-        # Try DDG news first, then DDG text
         try:
             from duckduckgo_search import DDGS
             with DDGS() as ddgs:
@@ -625,15 +627,13 @@ def get_form_and_h2h_context(home_team: str, away_team: str) -> str:
                 if not results:
                     results = list(ddgs.text(query, max_results=3))
                 for r in results:
-                    body = r.get('body') or r.get('description') or r.get('snippet', '')
+                    body = _trunc(r.get('body') or r.get('description') or r.get('snippet', ''))
                     snippets += f"  • {r.get('title', '')}: {body}\n"
         except Exception:
             pass
 
-        # Fallback to Yahoo News
         if len(snippets.strip()) < 40:
             try:
-                import urllib.parse
                 url = f"https://news.search.yahoo.com/search?p={urllib.parse.quote(query)}"
                 headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
                 resp = requests.get(url, headers=headers, timeout=8)
@@ -643,10 +643,25 @@ def get_form_and_h2h_context(home_team: str, away_team: str) -> str:
                         title_tag = item.find("h4") or item.find("a")
                         snippet_tag = item.find("p") or item.find(class_="compText")
                         if title_tag:
-                            snippets += f"  • {title_tag.get_text().strip()}: {snippet_tag.get_text().strip() if snippet_tag else ''}\n"
+                            snippets += f"  • {title_tag.get_text().strip()}: {_trunc(snippet_tag.get_text() if snippet_tag else '')}\n"
             except Exception:
                 pass
 
+        return label, snippets
+
+    results_map = {}
+    with ThreadPoolExecutor(max_workers=len(queries)) as executor:
+        futures = {executor.submit(_fetch_one, q): q for q in queries}
+        for future in as_completed(futures):
+            try:
+                label, snippets = future.result(timeout=15)
+                results_map[label] = snippets
+            except Exception:
+                pass
+
+    full_context = ""
+    for _, label in queries:
+        snippets = results_map.get(label, "")
         if snippets:
             full_context += f"\n[{label}]\n{snippets}"
 
@@ -692,6 +707,27 @@ def try_grounded_generation(prompt: str, api_key: str) -> Optional[str]:
             continue
 
     return None
+
+
+def _trunc(text: str, max_chars: int = 400) -> str:
+    """Truncate a string to max_chars, appending ellipsis if needed."""
+    if not text:
+        return ""
+    text = text.strip()
+    return text[:max_chars] + "..." if len(text) > max_chars else text
+
+
+def clean_name(name: str) -> str:
+    """Normalizes team names for fuzzy matching."""
+    return (
+        name.lower()
+        .replace(" ", "")
+        .replace("ç", "c")
+        .replace("ã", "a")
+        .replace("í", "i")
+        .replace("é", "e")
+        .replace("&", "and")
+    )
 
 
 def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = ""):
@@ -745,12 +781,10 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                     if relevant_games:
                         consolidated_games = []
                         st.write(f"Found {len(relevant_games)} match(es) in The Odds API. Fetching detailed lines...")
-                        for game in relevant_games:
+                        def _fetch_event(game):
                             event_id = game.get("id")
                             home = game.get("home_team")
                             away = game.get("away_team")
-                            
-                            # Fetch event-specific detailed odds to get BTTS and Alternate Totals
                             event_url = f"https://api.the-odds-api.com/v4/sports/soccer_fifa_world_cup/events/{event_id}/odds"
                             event_params = {
                                 "apiKey": odds_api_key,
@@ -758,14 +792,12 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                                 "markets": "h2h,spreads,totals,btts,alternate_totals",
                                 "oddsFormat": "american"
                             }
+                            priority = ["draftkings", "fanduel", "betmgm", "betrivers", "bovada", "mybookieag", "betonlineag", "betus", "lowvig"]
                             try:
                                 event_resp = requests.get(event_url, params=event_params, timeout=12)
                                 if event_resp.status_code == 200:
                                     event_data = event_resp.json()
                                     bookmakers = event_data.get("bookmakers", [])
-                                    
-                                    priority = ["draftkings", "fanduel", "betmgm", "betrivers", "bovada", "mybookieag", "betonlineag", "betus", "lowvig"]
-                                    
                                     consolidated = {
                                         "home_team": home,
                                         "away_team": away,
@@ -773,99 +805,66 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                                         "event_id": event_id,
                                         "odds": {}
                                     }
-                                    
-                                    # Consolidate Moneyline (h2h)
                                     for bk in priority:
                                         bm = next((b for b in bookmakers if b["key"] == bk), None)
                                         if not bm: continue
                                         market = next((m for m in bm.get("markets", []) if m["key"] == "h2h"), None)
                                         if market:
-                                            consolidated["odds"]["Moneyline"] = {
-                                                "bookmaker": bk,
-                                                "outcomes": market["outcomes"]
-                                            }
+                                            consolidated["odds"]["Moneyline"] = {"bookmaker": bk, "outcomes": market["outcomes"]}
                                             break
-                                    
-                                    # Consolidate Both Teams to Score (btts)
                                     for bk in priority:
                                         bm = next((b for b in bookmakers if b["key"] == bk), None)
                                         if not bm: continue
                                         market = next((m for m in bm.get("markets", []) if m["key"] == "btts"), None)
                                         if market:
-                                            consolidated["odds"]["BTTS"] = {
-                                                "bookmaker": bk,
-                                                "outcomes": market["outcomes"]
-                                            }
+                                            consolidated["odds"]["BTTS"] = {"bookmaker": bk, "outcomes": market["outcomes"]}
                                             break
-                                    
-                                    # Consolidate Totals (specifically Over/Under 2.5)
                                     found_totals = False
                                     for bk in priority:
                                         bm = next((b for b in bookmakers if b["key"] == bk), None)
                                         if not bm: continue
-                                        
                                         totals_markets = [m for m in bm.get("markets", []) if m["key"] in ("totals", "alternate_totals")]
-                                        over_2_5 = None
-                                        under_2_5 = None
+                                        over_2_5 = under_2_5 = None
                                         for m in totals_markets:
                                             for out in m.get("outcomes", []):
                                                 if out.get("point") == 2.5:
-                                                    if out.get("name") == "Over":
-                                                        over_2_5 = out
-                                                    elif out.get("name") == "Under":
-                                                        under_2_5 = out
+                                                    if out.get("name") == "Over": over_2_5 = out
+                                                    elif out.get("name") == "Under": under_2_5 = out
                                         if over_2_5 and under_2_5:
-                                            consolidated["odds"]["Total Goals (2.5)"] = {
-                                                "bookmaker": bk,
-                                                "outcomes": [over_2_5, under_2_5]
-                                            }
+                                            consolidated["odds"]["Total Goals (2.5)"] = {"bookmaker": bk, "outcomes": [over_2_5, under_2_5]}
                                             found_totals = True
                                             break
-                                            
                                     if not found_totals:
-                                        # Fallback to standard totals first outcome
                                         for bk in priority:
                                             bm = next((b for b in bookmakers if b["key"] == bk), None)
                                             if not bm: continue
                                             market = next((m for m in bm.get("markets", []) if m["key"] == "totals"), None)
                                             if market:
-                                                consolidated["odds"]["Total Goals (Other)"] = {
-                                                    "bookmaker": bk,
-                                                    "outcomes": market["outcomes"]
-                                                }
+                                                consolidated["odds"]["Total Goals (Other)"] = {"bookmaker": bk, "outcomes": market["outcomes"]}
                                                 break
-                                    
-                                    # Consolidate Spreads
                                     for bk in priority:
                                         bm = next((b for b in bookmakers if b["key"] == bk), None)
                                         if not bm: continue
                                         market = next((m for m in bm.get("markets", []) if m["key"] == "spreads"), None)
                                         if market:
-                                            consolidated["odds"]["Spread"] = {
-                                                "bookmaker": bk,
-                                                "outcomes": market["outcomes"]
-                                            }
+                                            consolidated["odds"]["Spread"] = {"bookmaker": bk, "outcomes": market["outcomes"]}
                                             break
-                                            
-                                    consolidated_games.append(consolidated)
+                                    return consolidated
                                 else:
-                                    # Event-specific HTTP failure fallback
                                     raise Exception(f"Event HTTP {event_resp.status_code}")
                             except Exception as ev_err:
                                 print(f"[DEBUG] Event detail fetch failed for {home} vs {away}: {ev_err}")
-                                consolidated_games.append({
-                                    "home_team": home,
-                                    "away_team": away,
-                                    "commence_time": game.get("commence_time"),
-                                    "event_id": event_id,
-                                    "odds": {
-                                        "Moneyline": {
-                                            "bookmaker": "general_api",
-                                            "outcomes": next((m["outcomes"] for m in game.get("bookmakers", [{}])[0].get("markets", []) if m["key"] == "h2h"), [])
-                                        }
-                                    }
-                                })
-                        
+                                return {
+                                    "home_team": home, "away_team": away,
+                                    "commence_time": game.get("commence_time"), "event_id": event_id,
+                                    "odds": {"Moneyline": {"bookmaker": "general_api", "outcomes": next(
+                                        (m["outcomes"] for m in game.get("bookmakers", [{}])[0].get("markets", []) if m["key"] == "h2h"), []
+                                    )}}
+                                }
+
+                        with ThreadPoolExecutor(max_workers=min(len(relevant_games), 5)) as ex:
+                            consolidated_games = list(ex.map(_fetch_event, relevant_games))
+
                         api_odds_context = json.dumps(consolidated_games, indent=2)
                         st.toast(f"Successfully retrieved and consolidated real lines for {len(consolidated_games)} match(es) from The Odds API!")
                     else:
@@ -915,8 +914,6 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
             
         if not dk_promo_snippets or len(dk_promo_snippets.strip()) < 50:
             try:
-                import urllib.parse
-                import time
                 url = f"https://news.search.yahoo.com/search?p={urllib.parse.quote(promo_query)}"
                 headers = {
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -941,68 +938,47 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
 
         for idx, m in enumerate(day_matches):
             match_snippets = ""
-            
-            # Query 1: Overall game lines
-            query = f"{m['home_team']} vs {m['away_team']} betting odds DraftKings"
-            # Query 2: Targeted player props
-            query_props = f"DraftKings player props shots on target {m['home_team']} vs {m['away_team']}"
-            # Query 3: Match specific promos/boosts
-            query_promo_match = f"DraftKings promo boost {m['home_team']} vs {m['away_team']}"
+            sync_queries = [
+                f"{m['home_team']} vs {m['away_team']} betting odds DraftKings",
+                f"DraftKings player props shots on target {m['home_team']} vs {m['away_team']}",
+                f"DraftKings promo boost {m['home_team']} vs {m['away_team']}",
+            ]
 
-            
-            # Fetch Query 1 (DDG)
-            try:
-                from duckduckgo_search import DDGS
-                with DDGS() as ddgs:
-                    results = list(ddgs.news(query, max_results=3))
-                    for r in results:
-                        match_snippets += f"Title: {r.get('title')}\nSnippet: {r.get('body')}\n\n"
-            except Exception:
-                pass
-                
-            # Fetch Query 2 (DDG)
-            try:
-                from duckduckgo_search import DDGS
-                with DDGS() as ddgs:
-                    results_props = list(ddgs.news(query_props, max_results=3))
-                    for r in results_props:
-                        match_snippets += f"Title: {r.get('title')}\nSnippet: {r.get('body')}\n\n"
-            except Exception:
-                pass
-                
-            # Fetch Query 3 (DDG)
-            try:
-                from duckduckgo_search import DDGS
-                with DDGS() as ddgs:
-                    results_promo_match = list(ddgs.news(query_promo_match, max_results=3))
-                    for r in results_promo_match:
-                        match_snippets += f"Title: {r.get('title')}\nSnippet: {r.get('body')}\n\n"
-                        dk_promo_snippets += f"Title: {r.get('title')}\nSnippet: {r.get('body')}\n\n"
-            except Exception:
-                pass
-                
-            # Fallback to Yahoo News Search for Query 1 if snippets are empty
-            if not match_snippets or len(match_snippets.strip()) < 50:
+            def _fetch_sync_query(q):
+                snippets = ""
                 try:
-                    import urllib.parse
-                    import time
-                    time.sleep(1.0)
+                    from duckduckgo_search import DDGS
+                    with DDGS() as ddgs:
+                        results = list(ddgs.news(q, max_results=3))
+                        for r in results:
+                            snippets += f"Title: {r.get('title')}\nSnippet: {_trunc(r.get('body', ''))}\n\n"
+                except Exception:
+                    pass
+                return q, snippets
+
+            with ThreadPoolExecutor(max_workers=3) as ex:
+                sync_futures = list(ex.map(_fetch_sync_query, sync_queries))
+
+            for sq, sq_snippets in sync_futures:
+                match_snippets += sq_snippets
+                if "promo boost" in sq:
+                    dk_promo_snippets += sq_snippets
+
+            # Fallback to Yahoo if all DDG searches returned nothing
+            if len(match_snippets.strip()) < 50:
+                try:
+                    query = sync_queries[0]
                     url = f"https://news.search.yahoo.com/search?p={urllib.parse.quote(query)}"
-                    headers = {
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                    }
+                    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
                     resp = requests.get(url, headers=headers, timeout=10)
                     if resp.status_code == 200:
                         soup = BeautifulSoup(resp.text, 'html.parser')
-                        items = soup.find_all("div", class_="NewsArticle")
-                        for item in items[:3]:
+                        for item in soup.find_all("div", class_="NewsArticle")[:3]:
                             title_tag = item.find("h4") or item.find("a")
                             if not title_tag:
                                 continue
-                            title = title_tag.get_text().strip()
                             snippet_tag = item.find("p") or item.find(class_="compText")
-                            snippet = snippet_tag.get_text().strip() if snippet_tag else ""
-                            match_snippets += f"Title: {title}\nSnippet: {snippet}\n\n"
+                            match_snippets += f"Title: {title_tag.get_text().strip()}\nSnippet: {_trunc(snippet_tag.get_text() if snippet_tag else '')}\n\n"
                 except Exception:
                     pass
             
@@ -1013,9 +989,6 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
             home_lower = m['home_team'].lower()
             away_lower = m['away_team'].lower()
             
-            def clean_name(name):
-                return name.replace(" ", "").replace("ç", "c").replace("ã", "a").replace("í", "i").replace("é", "e").replace("&", "and")
-                
             home_clean = clean_name(home_lower)
             away_clean = clean_name(away_lower)
             
@@ -1411,7 +1384,6 @@ def evaluate_tactical_matchups_ai(match: Match, api_key: str) -> Optional[Dict[s
         # Fallback to Yahoo News
         if len(raw_research.strip()) < 50:
             try:
-                import urllib.parse
                 query = f"{match.home_team} vs {match.away_team} world cup 2026 team news"
                 url = f"https://news.search.yahoo.com/search?p={urllib.parse.quote(query)}"
                 headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -2190,6 +2162,17 @@ def render_main_dashboard():
         if not day_matches:
             st.warning(f"No matches found in the database for {target_date.strftime('%A, %b %d, %Y')}. Run the sync pipeline to discover games for this date.")
         else:
+            # Batch ledger fetch once — filter client-side per match to avoid N DB queries
+            try:
+                _all_ledger = supabase.table("ledger").select("match_id,selection,market_type").execute().data
+            except Exception:
+                _all_ledger = []
+            _ledger_by_match: Dict[str, set] = {}
+            for _item in _all_ledger:
+                _ledger_by_match.setdefault(_item["match_id"], set()).add(
+                    (_item["selection"].lower(), _item["market_type"].lower())
+                )
+
             for match in day_matches:
                 match_id = match.match_id
                 
@@ -2344,13 +2327,9 @@ def render_main_dashboard():
                             injuries = res_data.get("injuries", {})
                             key_battle = res_data.get("key_battle", "")
                             
-                        # Filter out recommendations already logged or marked as used (dismissed) in the ledger
-                        try:
-                            ledger_resp = supabase.table("ledger").select("selection, market_type").eq("match_id", match_id).execute()
-                            logged_selections = {(item["selection"].lower(), item["market_type"].lower()) for item in ledger_resp.data}
-                            picks = [p for p in picks if (p["selection"].lower(), p["market_type"].lower()) not in logged_selections]
-                        except Exception as filter_err:
-                            print(f"[DEBUG] Error querying ledger for match filtering: {filter_err}")
+                        # Filter out already-logged picks using the batched ledger dict
+                        logged_selections = _ledger_by_match.get(match_id, set())
+                        picks = [p for p in picks if (p["selection"].lower(), p["market_type"].lower()) not in logged_selections]
                             
                         # Render Match-wide Injury & Tactical Report expander first!
                         if injuries.get("home_team_absences") or injuries.get("away_team_absences") or key_battle:
