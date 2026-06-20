@@ -610,6 +610,8 @@ def get_form_and_h2h_context(home_team: str, away_team: str) -> str:
         (f"{home_team} vs {away_team} head to head history all time record", "HEAD-TO-HEAD HISTORY"),
         (f"{home_team} {away_team} expected goals xG shots statistics World Cup 2026", "xG & UNDERLYING STATS"),
         (f"referee appointed {home_team} vs {away_team} World Cup 2026 official", "REFEREE TENDENCIES"),
+        (f"{home_team} tactical style formation system pressing World Cup 2026", "HOME TACTICAL STYLE"),
+        (f"{away_team} tactical style formation system pressing World Cup 2026", "AWAY TACTICAL STYLE"),
     ]
 
     full_context = ""
@@ -1479,11 +1481,17 @@ ANALYSIS TASKS:
 6. Weather impact: If Section 5 shows adverse conditions (wind, rain), adjust corners/totals recommendations accordingly.
 7. Line movement: If any line moved sharper (Section 1), presume sharp action — consider fading public or following the sharp side.
 8. Referee tendency: If referee data suggests high card rates, note potential impact on bookings markets.
-9. Fair value: For each recommended selection, estimate your calculated "true odds" using all above data.
-10. Recommend ALL positive-EV selections. For Promo/Boost, compare boosted odds vs your true odds.
-11. If 2+ correlated value picks exist, construct an SGP with `"market_type": "SGP"`, `"legs"` list, and estimated `"base_odds"`.
-12. Conviction level: "High" (multiple confirming signals from different sections), "Medium" (1-2 signals), "Low" (single signal or borderline).
-13. For each pick, populate `"research_summary"` with 2-3 bullet points citing the SPECIFIC data that drove the recommendation.
+9. Tactical style clash (NEW): Using Sections 3, 4, and your own knowledge, explicitly analyze the style matchup:
+   - What formation/system does each team use?
+   - Is one team a high-press side facing a slow-buildup team? A possession side facing a low-block?
+   - Which team's style exploits the other's known weakness?
+   - Does this style clash favor high or low total goals? More or fewer corners? More or fewer cards?
+   - Use this style analysis to refine ALL your Total Goals, BTTS, Corners, and Spread recommendations.
+10. Fair value: For each recommended selection, estimate your calculated "true odds" using all above data.
+11. Recommend ALL positive-EV selections. For Promo/Boost, compare boosted odds vs your true odds.
+12. If 2+ correlated value picks exist, construct an SGP with `"market_type": "SGP"`, `"legs"` list, and estimated `"base_odds"`.
+13. Conviction level: "High" (multiple confirming signals from different sections), "Medium" (1-2 signals), "Low" (single signal or borderline).
+14. For each pick, populate `"research_summary"` with 2-3 bullet points citing the SPECIFIC data that drove the recommendation.
 
 Return ONLY a valid JSON object matching this schema:
 {{
