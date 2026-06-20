@@ -101,6 +101,69 @@ div[data-testid="stMetricValue"] {
     font-weight: 800 !important;
     color: #38bdf8 !important;
 }
+
+/* AI Confidence Meter */
+.confidence-meter-wrap {
+    margin: 0.5rem 0 1rem 0;
+}
+.confidence-meter-label {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+    font-size: 0.8rem;
+    color: #94a3b8;
+    font-family: 'Outfit', 'Inter', sans-serif;
+}
+.confidence-meter-label span.score-val {
+    font-size: 1.1rem;
+    font-weight: 800;
+    color: #e2e8f0;
+}
+.confidence-track {
+    width: 100%;
+    height: 10px;
+    background: rgba(255,255,255,0.07);
+    border-radius: 99px;
+    overflow: hidden;
+    box-shadow: inset 0 1px 4px rgba(0,0,0,0.4);
+}
+.confidence-fill {
+    height: 100%;
+    border-radius: 99px;
+    transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Dashboard stat cards */
+.stat-card {
+    background: rgba(30, 41, 59, 0.55);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 14px;
+    padding: 1rem 1.25rem;
+    text-align: center;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.stat-card:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 10px 30px rgba(99,102,241,0.15);
+}
+.stat-card .stat-value {
+    font-size: 1.8rem;
+    font-weight: 800;
+    color: #e2e8f0;
+    font-family: 'Outfit', 'Inter', sans-serif;
+}
+.stat-card .stat-label {
+    font-size: 0.72rem;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-top: 2px;
+}
+.stat-card .stat-delta-pos { color: #4ade80; font-size: 0.85rem; font-weight: 600; }
+.stat-card .stat-delta-neg { color: #f87171; font-size: 0.85rem; font-weight: 600; }
+.stat-card .stat-delta-neu { color: #94a3b8; font-size: 0.85rem; font-weight: 600; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -1605,6 +1668,133 @@ def execute_sync_pipeline():
 # --- 5. USER INTERFACE (Mobile-First Streamlit Components) ---
 
 
+def render_dashboard_tab():
+    """Renders the bet tracking performance dashboard section."""
+    try:
+        # Fetch all settled + pending ledger entries
+        ledger_resp = supabase.table("ledger").select("*").order("created_at", desc=False).execute()
+        all_entries = ledger_resp.data
+    except Exception as e:
+        st.error(f"Could not load ledger data: {e}")
+        return
+
+    if not all_entries:
+        st.info("📭 No bets tracked yet. Log your first pick from a conviction card below!")
+        return
+
+    # --- Compute aggregate stats ---
+    total = len(all_entries)
+    won    = sum(1 for e in all_entries if e["status"] == "Won")
+    lost   = sum(1 for e in all_entries if e["status"] == "Lost")
+    void   = sum(1 for e in all_entries if e["status"] == "Void")
+    pending = sum(1 for e in all_entries if e["status"] == "Pending")
+    settled = won + lost
+    win_rate = (won / settled * 100) if settled > 0 else 0.0
+    net_returns = [e["net_return"] for e in all_entries if e["net_return"] is not None]
+    net_pl = sum(net_returns)
+
+    # Current streak (scan from most recent settled)
+    streak = 0
+    streak_label = "—"
+    settled_entries = [e for e in reversed(all_entries) if e["status"] in ("Won", "Lost")]
+    if settled_entries:
+        streak_status = settled_entries[0]["status"]
+        for e in settled_entries:
+            if e["status"] == streak_status:
+                streak += 1
+            else:
+                break
+        streak_label = f"{'🔥' if streak_status == 'Won' else '❄️'} {streak}{'W' if streak_status == 'Won' else 'L'}"
+
+    # --- Stat Cards Row ---
+    col1, col2, col3, col4 = st.columns(4)
+    def _card(col, value, label, delta=None, delta_pos=True):
+        delta_class = "stat-delta-pos" if delta_pos else "stat-delta-neg"
+        delta_html = f'<div class="{delta_class}">{delta}</div>' if delta else ""
+        col.markdown(f"""
+<div class="stat-card">
+  <div class="stat-value">{value}</div>
+  <div class="stat-label">{label}</div>
+  {delta_html}
+</div>""", unsafe_allow_html=True)
+
+    _card(col1, total, "Total Bets", f"{pending} Pending", delta_pos=True)
+    _card(col2, f"{won}W / {lost}L", "Record", f"{win_rate:.1f}% Win Rate", delta_pos=(win_rate >= 50))
+    pl_delta_str = f"{net_pl:+.2f}u"
+    _card(col3, f"{net_pl:+.2f}u", "Net P&L", pl_delta_str, delta_pos=(net_pl >= 0))
+    _card(col4, streak_label, "Current Streak")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # --- Cumulative P&L Chart ---
+    settled_with_returns = [(e["created_at"], e["net_return"]) for e in all_entries if e["net_return"] is not None]
+    if settled_with_returns:
+        import pandas as pd
+        df_pl = pd.DataFrame(settled_with_returns, columns=["Date", "Return"])
+        df_pl["Date"] = pd.to_datetime(df_pl["Date"]).dt.strftime("%m/%d %H:%M")
+        df_pl["Cumulative P&L (units)"] = df_pl["Return"].cumsum()
+        df_pl = df_pl.set_index("Date")
+
+        st.markdown("**📈 Cumulative P&L Over Time**")
+        st.line_chart(df_pl[["Cumulative P&L (units)"]], use_container_width=True, height=200)
+
+    # --- Market Breakdown ---
+    settled_data = [e for e in all_entries if e["status"] in ("Won", "Lost")]
+    if settled_data:
+        import pandas as pd
+        from collections import defaultdict
+        market_stats = defaultdict(lambda: {"won": 0, "total": 0})
+        for e in settled_data:
+            mtype = e.get("market_type", "Unknown")
+            market_stats[mtype]["total"] += 1
+            if e["status"] == "Won":
+                market_stats[mtype]["won"] += 1
+
+        market_rows = []
+        for mtype, s in market_stats.items():
+            wr = (s["won"] / s["total"] * 100) if s["total"] > 0 else 0
+            market_rows.append({"Market": mtype, "Win Rate %": round(wr, 1), "Bets": s["total"]})
+
+        df_mkt = pd.DataFrame(market_rows).set_index("Market")
+
+        col_chart, col_tbl = st.columns([2, 1])
+        with col_chart:
+            st.markdown("**🎯 Win Rate by Market Type**")
+            st.bar_chart(df_mkt[["Win Rate %"]], use_container_width=True, height=180)
+        with col_tbl:
+            st.markdown("**Breakdown**")
+            for _, row in df_mkt.reset_index().iterrows():
+                wr_color = "green" if row["Win Rate %"] >= 50 else "red"
+                st.markdown(f":{wr_color}[**{row['Market']}**] — {row['Win Rate %']}% ({row['Bets']} bets)")
+
+    # --- Recent Bets Table ---
+    st.markdown("<br>**📋 Recent Settled Bets**", unsafe_allow_html=True)
+    recent = sorted(
+        [e for e in all_entries if e["status"] in ("Won", "Lost")],
+        key=lambda x: x.get("created_at", ""),
+        reverse=True
+    )[:8]
+
+    if not recent:
+        st.caption("No settled bets yet.")
+    else:
+        for e in recent:
+            color = "green" if e["status"] == "Won" else "red"
+            ret_str = f"{e['net_return']:+.2f}u" if e["net_return"] is not None else "N/A"
+            mtype = e.get("market_type", "")
+            sel = e.get("selection", "")
+            if mtype == "SGP":
+                try:
+                    sgp_data = json.loads(sel)
+                    sel = sgp_data.get("display_name", sel)
+                except Exception:
+                    pass
+            with st.container(border=True):
+                c1, c2, c3 = st.columns([3, 1, 1])
+                c1.markdown(f"**{sel}** `{mtype}`")
+                c2.markdown(f":{color}[**{e['status']}**]")
+                c3.markdown(f"**{ret_str}**")
+
 
 def render_main_dashboard():
     """Renders the main application dashboard after successful authentication."""
@@ -1669,7 +1859,13 @@ def render_main_dashboard():
         use_container_width=True,
     )
     st.caption("On-demand trigger: Scrapes lineups, fetches lines, evaluates matchups, and audits ledger.")
-    
+
+    st.divider()
+
+    # --- Performance Dashboard ---
+    with st.expander("📊 Bet Tracking Dashboard", expanded=False):
+        render_dashboard_tab()
+
     st.divider()
 
     # --- Match List & Research Section ---
@@ -2010,12 +2206,15 @@ def render_conviction_card(pick: Dict[str, Any]):
         if conviction_raw == "low":
             advice = "Speculative Sprinkle"
             badge_color = "red"
+            base_conf = 25
         elif conviction_raw == "medium":
             advice = "Standard Play"
             badge_color = "orange"
+            base_conf = 52
         else:
             advice = "Strong Edge Play"
             badge_color = "green"
+            base_conf = 78
             
         # Calculate suggested Kelly Criterion stake size & suggested units (1u = 2% bankroll)
         base_odds = pick.get("base_odds")
@@ -2034,6 +2233,30 @@ def render_conviction_card(pick: Dict[str, Any]):
             true_prob = 100.0 / (true_odds + 100.0) if true_odds > 0 else abs(true_odds) / (abs(true_odds) + 100.0)
             edge_pct = max(0.0, (true_prob - base_prob) * 100.0)
             
+        # --- AI Confidence Score Meter ---
+        edge_boost = min(edge_pct * 1.2, 22.0)  # edge contributes up to 22 pts
+        confidence_score = min(100, max(0, round(base_conf + edge_boost)))
+        if confidence_score >= 70:
+            meter_color = "linear-gradient(90deg, #4ade80, #22d3ee)"
+            meter_label_color = "#4ade80"
+        elif confidence_score >= 45:
+            meter_color = "linear-gradient(90deg, #fbbf24, #f97316)"
+            meter_label_color = "#fbbf24"
+        else:
+            meter_color = "linear-gradient(90deg, #f87171, #e879f9)"
+            meter_label_color = "#f87171"
+
+        st.markdown(f"""
+<div class="confidence-meter-wrap">
+  <div class="confidence-meter-label">
+    <span>🧠 AI Confidence Score</span>
+    <span class="score-val" style="color:{meter_label_color}">{confidence_score}%</span>
+  </div>
+  <div class="confidence-track">
+    <div class="confidence-fill" style="width:{confidence_score}%; background:{meter_color};"></div>
+  </div>
+</div>""", unsafe_allow_html=True)
+
         col_badge, col_kelly = st.columns([1, 1])
         with col_badge:
             edge_str = f" | Edge: :green[+{edge_pct:.1f}%]" if edge_pct > 0.0 else ""
@@ -2043,7 +2266,7 @@ def render_conviction_card(pick: Dict[str, Any]):
                 st.markdown(f"**Suggested Stake (Half-Kelly):** :green[{kelly_pct}% ({suggested_units}u)]")
             else:
                 st.markdown(f"**Suggested Stake (Half-Kelly):** :grey[N/A (1.00u)]")
-        
+
         st.markdown("**Rationale:**")
         st.info(pick['rationale'])
 
