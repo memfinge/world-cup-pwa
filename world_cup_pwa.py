@@ -905,7 +905,7 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
         promo_query = f"DraftKings sportsbook odds boosts promotions soccer {target_date_str}"
         try:
             from duckduckgo_search import DDGS
-            with DDGS() as ddgs:
+            with DDGS(timeout=3) as ddgs:
                 results_promos = list(ddgs.news(promo_query, max_results=4))
                 for r in results_promos:
                     dk_promo_snippets += f"Title: {r.get('title')}\nSnippet: {r.get('body')}\n\n"
@@ -918,7 +918,7 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                 headers = {
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                 }
-                resp = requests.get(url, headers=headers, timeout=10)
+                resp = requests.get(url, headers=headers, timeout=4)
                 if resp.status_code == 200:
                     soup = BeautifulSoup(resp.text, 'html.parser')
                     items = soup.find_all("div", class_="NewsArticle")
@@ -933,11 +933,9 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                 pass
 
         # 5. Fetch odds news/betting prediction snippets from web search (RAG)
-        rag_search_context = ""
-        bovada_all_matches_summary = {}
-
-        for idx, m in enumerate(day_matches):
+        def _process_single_match(m):
             match_snippets = ""
+            dk_promo_local = ""
             sync_queries = [
                 f"{m['home_team']} vs {m['away_team']} betting odds DraftKings",
                 f"DraftKings player props shots on target {m['home_team']} vs {m['away_team']}",
@@ -948,7 +946,7 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                 snippets = ""
                 try:
                     from duckduckgo_search import DDGS
-                    with DDGS() as ddgs:
+                    with DDGS(timeout=3) as ddgs:
                         results = list(ddgs.news(q, max_results=3))
                         for r in results:
                             snippets += f"Title: {r.get('title')}\nSnippet: {_trunc(r.get('body', ''))}\n\n"
@@ -956,13 +954,14 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                     pass
                 return q, snippets
 
+            # Inner thread pool for 3 queries of this match
             with ThreadPoolExecutor(max_workers=3) as ex:
                 sync_futures = list(ex.map(_fetch_sync_query, sync_queries))
 
             for sq, sq_snippets in sync_futures:
                 match_snippets += sq_snippets
                 if "promo boost" in sq:
-                    dk_promo_snippets += sq_snippets
+                    dk_promo_local += sq_snippets
 
             # Fallback to Yahoo if all DDG searches returned nothing
             if len(match_snippets.strip()) < 50:
@@ -970,7 +969,7 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                     query = sync_queries[0]
                     url = f"https://news.search.yahoo.com/search?p={urllib.parse.quote(query)}"
                     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-                    resp = requests.get(url, headers=headers, timeout=10)
+                    resp = requests.get(url, headers=headers, timeout=4)
                     if resp.status_code == 200:
                         soup = BeautifulSoup(resp.text, 'html.parser')
                         for item in soup.find_all("div", class_="NewsArticle")[:3]:
@@ -982,13 +981,10 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                 except Exception:
                     pass
             
-            rag_search_context += f"=== Match: {m['home_team']} vs {m['away_team']} ===\n{match_snippets}\n"
-
             # Parse Bovada data for this specific match
             bovada_match = None
             home_lower = m['home_team'].lower()
             away_lower = m['away_team'].lower()
-            
             home_clean = clean_name(home_lower)
             away_clean = clean_name(away_lower)
             
@@ -1050,8 +1046,20 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                                         "price": out.get("price", {}).get("american")
                                     })
                                 bovada_odds_summary["Both Teams to Score"] = outcomes
-                                
+
+            return m, match_snippets, bovada_odds_summary, dk_promo_local
+
+        # Execute news fetching and Bovada summaries in parallel across all matches
+        with ThreadPoolExecutor(max_workers=min(len(day_matches), 4)) as outer_ex:
+            futures = [outer_ex.submit(_process_single_match, m) for m in day_matches]
+            results = [f.result() for f in futures]
+
+        rag_search_context = ""
+        bovada_all_matches_summary = {}
+        for m, match_snippets, bovada_odds_summary, dk_promo_local in results:
+            rag_search_context += f"=== Match: {m['home_team']} vs {m['away_team']} ===\n{match_snippets}\n"
             bovada_all_matches_summary[f"{m['home_team']} vs {m['away_team']}"] = bovada_odds_summary
+            dk_promo_snippets += dk_promo_local
 
         bovada_odds_context = json.dumps(bovada_all_matches_summary, indent=2)
         dk_promos_context = dk_promo_snippets.strip()
