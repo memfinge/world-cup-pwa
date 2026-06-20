@@ -1670,8 +1670,7 @@ If no value exists anywhere, return `"recommendations": []`.
         }
     except Exception as e:
         print(f"[DEBUG] Exception in evaluate_tactical_matchups_ai: {e}")
-        st.error(f"Error during AI evaluation for match {match.match_id}: {e}")
-        return None
+        return {"error": str(e)}
 
 def get_final_scores(api_key: str = "") -> Dict[str, str]:
     """
@@ -2346,6 +2345,12 @@ def render_main_dashboard():
                             picks = []
                             injuries = {}
                             key_battle = ""
+                        elif isinstance(res_data, dict) and "error" in res_data:
+                            picks = []
+                            injuries = {}
+                            key_battle = ""
+                            st.error(f"⚠️ AI Evaluation failed: {res_data['error']}")
+                            st.info("This is typically caused by a rate limit (429) on your free API Key. Please wait a minute and try Rerunning from the Match Sandbox.")
                         elif isinstance(res_data, list):
                             picks = res_data
                             injuries = {}
