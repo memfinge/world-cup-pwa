@@ -1348,7 +1348,7 @@ def evaluate_tactical_matchups_ai(match: Match, api_key: str) -> Optional[Dict[s
         odds_resp = supabase.table("odds").select("*").eq("match_id", match.match_id).execute()
         odds_data = odds_resp.data
         if not odds_data:
-            return None
+            return {"error": "No odds data found in the database for this match. Please run the sync pipeline first."}
         valid_options_str = "\n".join(
             [f"- Selection: '{o['selection']}' | Market Type: '{o['market_type']}'" for o in odds_data]
         )
@@ -1556,7 +1556,7 @@ If no value exists anywhere, return `"recommendations": []`.
                 data = json.loads(content)
             except Exception as e2:
                 print(f"[DEBUG] Failed to parse JSON even after cleanup: {e2}")
-                return None
+                return {"error": f"AI responded with invalid JSON format that could not be parsed: {e2}"}
             
         recommendations = data.get("recommendations", [])
         valid_picks = []
