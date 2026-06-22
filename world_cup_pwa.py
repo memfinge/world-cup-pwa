@@ -3791,10 +3791,10 @@ def render_main_dashboard():
                 )
 
             for entry in ledger_entries:
-                color = "grey"
-                if entry.status == LedgerStatus.WON: color = "green"
-                elif entry.status == LedgerStatus.LOST: color = "red"
-                elif entry.status == LedgerStatus.VOID: color = "orange"
+                status_color = "#94a3b8"
+                if entry.status == LedgerStatus.WON: status_color = "#00ff87"
+                elif entry.status == LedgerStatus.LOST: status_color = "#ff5e62"
+                elif entry.status == LedgerStatus.VOID: status_color = "#ffaa00"
 
                 with st.container(border=True):
                     col1, col2 = st.columns([3, 1])
@@ -3810,14 +3810,14 @@ def render_main_dashboard():
                             st.markdown(f"**{entry.selection}** ({entry.base_odds})")
                         st.caption(f"`{entry.market_type}` · Match: {entry.match_id}")
                     with col2:
-                        st.markdown(f"**:{color}[{entry.status.upper()}]**")
+                        st.markdown(f'<div style="font-size: 0.9rem; font-weight: 800; color: {status_color}; margin-bottom: 2px;">{entry.status.upper()}</div>', unsafe_allow_html=True)
                         if entry.net_return is not None:
                             unit_val = st.session_state.get("unit_value", 10.0)
                             ret_usd = entry.net_return * unit_val
-                            st.markdown(f":{color}[**${ret_usd:+.2f}**]")
-                            st.caption(f":{color}[{entry.net_return:+.2f}u]")
+                            st.markdown(f'<div style="font-size: 1.35rem; font-weight: 900; color: {status_color}; line-height: 1.25;">${ret_usd:+.2f}</div>', unsafe_allow_html=True)
+                            st.markdown(f'<div style="font-size: 0.8rem; font-weight: 600; color: {status_color}; opacity: 0.85;">{entry.net_return:+.2f}u</div>', unsafe_allow_html=True)
                         else:
-                            st.markdown("**N/A**")
+                            st.markdown('<div style="font-size: 1.35rem; font-weight: 900; color: #94a3b8;">N/A</div>', unsafe_allow_html=True)
 
                     # Manual override and delete controls
                     with st.expander("🛠️ Settle or Delete Bet", expanded=False):
