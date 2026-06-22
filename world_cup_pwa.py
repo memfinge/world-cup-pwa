@@ -31,77 +31,76 @@ st.set_page_config(
 )
 
 # Inject Custom Glassmorphic Dark-Mode Stylesheet at script startup to keep it persistent
-# Inject Custom Glassmorphic Dark-Mode Stylesheet at script startup to keep it persistent
+# # Inject Custom Glassmorphic Dark-Mode Stylesheet at script startup to keep it persistent
 CUSTOM_CSS = """
 <style>
-/* 2026 World Cup Multi-Color Retro-Modern Theme */
+/* Refined Dark-Mode Sports Theme */
 .stApp {
-    background: linear-gradient(135deg, #030611, #080d26, #02040b) !important;
+    background: linear-gradient(135deg, #050814, #0b1528, #03050b) !important;
     color: #e2e8f0 !important;
 }
 
-/* Glassmorphic Cards with iconic World Cup Multi-Color Gradient Borders */
+/* Glassmorphic Cards with Subtle Slate/Turquoise Borders */
 div[data-testid="stExpander"], div[data-testid="element-container"] > div[style*="border"] {
-    background: rgba(10, 16, 37, 0.6) !important;
-    backdrop-filter: blur(14px) !important;
-    -webkit-backdrop-filter: blur(14px) !important;
-    border: 2px solid transparent !important;
-    border-image: linear-gradient(90deg, #00f2fe, #00ff87, #facc15, #ff5e62, #7c3aed) 1 !important;
-    border-radius: 0px !important; /* Flat retro styling fits the geometric look best */
-    box-shadow: 0 10px 35px 0 rgba(0, 0, 0, 0.4) !important;
-    transition: all 0.3s ease !important;
-    margin-bottom: 14px !important;
+    background: rgba(15, 23, 42, 0.6) !important;
+    backdrop-filter: blur(12px) !important;
+    -webkit-backdrop-filter: blur(12px) !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    border-radius: 12px !important;
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3) !important;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    margin-bottom: 12px !important;
 }
 
-/* Hover effect with vibrant radial glow */
+/* Hover effect with soft turquoise highlight */
 div[data-testid="stExpander"]:hover, div[data-testid="element-container"] > div[style*="border"]:hover {
-    box-shadow: 0 15px 45px 0 rgba(99, 102, 241, 0.18) !important;
+    border-color: rgba(0, 242, 254, 0.3) !important;
+    box-shadow: 0 12px 40px 0 rgba(0, 242, 254, 0.08) !important;
     transform: translateY(-2px) !important;
 }
 
-/* Typography Custom Fonts and Multi-Color Brand Gradient */
+/* Typography Custom Fonts and Tri-Color Brand Gradient */
 h1, h2, h3 {
     color: #ffffff !important;
     font-family: 'Outfit', 'Inter', sans-serif !important;
-    font-weight: 800 !important;
+    font-weight: 700 !important;
 }
 
 h1 {
-    background: linear-gradient(to right, #00f2fe, #00ff87, #facc15, #ff5e62, #7c3aed) !important;
+    background: linear-gradient(to right, #00f2fe, #a855f7, #facc15) !important;
     -webkit-background-clip: text !important;
     -webkit-text-fill-color: transparent !important;
     padding-bottom: 0.2em !important;
-    font-size: 2.3rem !important;
+    font-size: 2.25rem !important;
 }
 
-/* 2026 Brand Buttons (Vibrant Rainbow Shift) */
+/* Premium Buttons (Deep Blue to Purple Gradient) */
 button {
-    background: linear-gradient(90deg, #00f2fe, #00ff87, #facc15, #ff5e62, #7c3aed) !important;
-    color: #030712 !important;
+    background: linear-gradient(90deg, #1e40af, #6d28d9) !important;
+    color: #ffffff !important;
     border: none !important;
-    border-radius: 0px !important; /* Geometric flat style */
-    padding: 0.55rem 1.1rem !important;
-    font-weight: 800 !important;
-    box-shadow: 0 4px 15px 0 rgba(0, 242, 254, 0.25) !important;
-    transition: all 0.25s ease-in-out !important;
+    border-radius: 8px !important;
+    padding: 0.5rem 1.0rem !important;
+    font-weight: 600 !important;
+    box-shadow: 0 4px 12px 0 rgba(99, 102, 241, 0.3) !important;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
 }
 
 button:hover {
-    background: linear-gradient(90deg, #7c3aed, #ff5e62, #facc15, #00ff87, #00f2fe) !important;
-    color: #ffffff !important;
-    box-shadow: 0 6px 22px 0 rgba(124, 58, 237, 0.45) !important;
+    background: linear-gradient(90deg, #1d4ed8, #7c3aed) !important;
+    box-shadow: 0 6px 18px 0 rgba(99, 102, 241, 0.5) !important;
     transform: translateY(-1px) !important;
 }
 
 /* Form Controls & Inputs Styling */
 input, select, textarea {
-    background-color: rgba(5, 8, 22, 0.8) !important;
-    border: 1px solid rgba(0, 242, 254, 0.25) !important;
+    background-color: rgba(15, 23, 42, 0.55) !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
     color: #f1f5f9 !important;
-    border-radius: 0px !important;
+    border-radius: 8px !important;
 }
 
-/* Metric Display Values (Light Turquoise) */
+/* Metric Display Values (Bright Turquoise) */
 div[data-testid="stMetricValue"] {
     font-weight: 800 !important;
     color: #00f2fe !important;
@@ -117,13 +116,13 @@ div[data-testid="stMetricValue"] {
     align-items: center;
     margin-bottom: 6px;
     font-size: 0.8rem;
-    color: #a5b4fc;
+    color: #94a3b8;
     font-family: 'Outfit', 'Inter', sans-serif;
 }
 .confidence-meter-label span.score-val {
     font-size: 1.1rem;
     font-weight: 800;
-    color: #ffffff;
+    color: #e2e8f0;
 }
 .confidence-track {
     width: 100%;
@@ -141,18 +140,17 @@ div[data-testid="stMetricValue"] {
 
 /* Dashboard stat cards */
 .stat-card {
-    background: rgba(10, 16, 37, 0.65);
+    background: rgba(15, 23, 42, 0.6);
     backdrop-filter: blur(12px);
-    border: 2px solid transparent;
-    border-image: linear-gradient(90deg, #00f2fe, #7c3aed) 1;
-    border-radius: 0px;
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 14px;
     padding: 1rem 1.25rem;
     text-align: center;
     transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 .stat-card:hover {
     transform: translateY(-3px);
-    box-shadow: 0 10px 30px rgba(0,242,254,0.2);
+    box-shadow: 0 10px 30px rgba(0,242,254,0.12);
 }
 .stat-card .stat-value {
     font-size: 1.8rem;
@@ -177,8 +175,7 @@ div[data-testid="stMetricValue"] {
     justify-content: space-between;
     align-items: center;
     padding: 12px 10px;
-    border-bottom: 2px solid transparent;
-    border-image: linear-gradient(to right, #00f2fe, #00ff87, #facc15, #ff5e62, #7c3aed) 1;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
     margin-bottom: 14px;
 }
 .scoreboard-team {
@@ -220,23 +217,23 @@ div[data-testid="stMetricValue"] {
     padding: 3px 8px;
     font-size: 0.7rem;
     font-weight: 700;
-    border-radius: 4px;
+    border-radius: 6px;
     letter-spacing: 0.02em;
 }
 .badge-confirmed {
     background: rgba(0, 255, 135, 0.08);
     color: #00ff87;
-    border: 1px solid rgba(0, 255, 135, 0.2);
+    border: 1px solid rgba(0, 255, 135, 0.15);
 }
 .badge-projected {
     background: rgba(124, 58, 237, 0.08);
     color: #a78bfa;
-    border: 1px solid rgba(124, 58, 237, 0.2);
+    border: 1px solid rgba(124, 58, 237, 0.15);
 }
 .badge-none {
     background: rgba(100, 116, 139, 0.08);
     color: #94a3b8;
-    border: 1px solid rgba(100, 116, 139, 0.2);
+    border: 1px solid rgba(100, 116, 139, 0.15);
 }
 </style>
 """
@@ -3299,6 +3296,8 @@ def render_dashboard_tab():
 
 def render_main_dashboard():
     """Renders the main application dashboard after successful authentication."""
+    if os.path.exists("world_cup_2026_banner.png"):
+        st.image("world_cup_2026_banner.png", use_container_width=True)
     st.title("WC Data Dashboard")
 
     # Load matches from DB on startup if not already in session state
