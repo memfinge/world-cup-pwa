@@ -3394,7 +3394,7 @@ def render_dashboard_tab():
                 c1, c2, c3 = st.columns([3, 1, 1])
                 c1.markdown(f"**{sel}** `{mtype}`")
                 c2.markdown(f":{color}[**{e['status']}**]")
-                c3.markdown(f"**{ret_str}**")
+                c3.markdown(f":{color}[**{ret_str}**]")
 
 
 def render_main_dashboard():
