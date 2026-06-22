@@ -3439,9 +3439,9 @@ def render_main_dashboard():
                         ret = f"{entry.net_return:+.2f}" if entry.net_return is not None else "N/A"
                         st.metric("Net", f"{ret}u", delta_color="off")
 
-                    # Manual settle controls for pending entries
-                    if entry.status == LedgerStatus.PENDING:
-                        mc1, mc2, mc3 = st.columns(3)
+                    # Manual override and delete controls
+                    with st.expander("🛠️ Settle or Delete Bet", expanded=False):
+                        mc1, mc2, mc3, mc4 = st.columns(4)
                         slip_id = entry.slip_id
                         base_odds = entry.base_odds
                         unit_risk = entry.unit_risk
@@ -3462,6 +3462,10 @@ def render_main_dashboard():
                             }).eq("slip_id", sid).execute()
                             st.rerun()
 
+                        def _delete_bet(sid=slip_id):
+                            supabase.table("ledger").delete().eq("slip_id", sid).execute()
+                            st.rerun()
+
                         with mc1:
                             if st.button("✅ Won", key=f"manual_won_{slip_id}", use_container_width=True):
                                 _manual_settle(sid=slip_id, outcome=LedgerStatus.WON, odds=base_odds, risk=unit_risk)
@@ -3471,6 +3475,9 @@ def render_main_dashboard():
                         with mc3:
                             if st.button("↩️ Void", key=f"manual_void_{slip_id}", use_container_width=True):
                                 _manual_settle(sid=slip_id, outcome=LedgerStatus.VOID, odds=base_odds, risk=unit_risk)
+                        with mc4:
+                            if st.button("🗑️ Delete", key=f"manual_delete_{slip_id}", use_container_width=True):
+                                _delete_bet(sid=slip_id)
 
     except Exception as e:
         st.error(f"Could not load ledger: {e}")
