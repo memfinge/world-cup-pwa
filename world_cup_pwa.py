@@ -179,7 +179,8 @@ div[data-testid="stMetricValue"] {
     margin-bottom: 14px;
 }
 .scoreboard-team {
-    flex: 1;
+    flex: 1 1 0%;
+    width: 0;
     font-size: 1.25rem;
     font-weight: 700;
     font-family: 'Outfit', 'Inter', sans-serif;
@@ -188,6 +189,10 @@ div[data-testid="stMetricValue"] {
     height: 48px;
     display: flex;
     align-items: center;
+    background-size: cover !important;
+    background-position: center !important;
+    background-repeat: no-repeat !important;
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8), 0 0 1px rgba(0, 0, 0, 0.5);
 }
 .scoreboard-team.home {
     justify-content: flex-end;
@@ -805,6 +810,7 @@ _COUNTRY_CODES = {
     "belgium": "be",
     "spain": "es",
     "ivorycoast": "ci",
+    "cotedivoire": "ci",
     "japan": "jp",
     "saudiarabia": "sa",
     "egypt": "eg",
@@ -828,10 +834,62 @@ _COUNTRY_CODES = {
     "morocco": "ma",
     "croatia": "hr",
     "italy": "it",
+    "curacao": "cw",
+    "tunisia": "tn",
+    "austria": "at",
+    "iran": "ir",
+    "capeverde": "cv",
+    "colombia": "co",
+    "chile": "cl",
+    "peru": "pe",
+    "venezuela": "ve",
+    "paraguay": "py",
+    "bolivia": "bo",
+    "southkorea": "kr",
+    "korearepublic": "kr",
+    "china": "cn",
+    "qatar": "qa",
+    "unitedarabemirates": "ae",
+    "uae": "ae",
+    "nigeria": "ng",
+    "cameroon": "cm",
+    "ghana": "gh",
+    "southafrica": "za",
+    "switzerland": "ch",
+    "denmark": "dk",
+    "poland": "pl",
+    "ukraine": "ua",
+    "turkey": "tr",
+    "turkiye": "tr",
+    "greece": "gr",
+    "czechrepublic": "cz",
+    "czechia": "cz",
+    "hungary": "hu",
+    "romania": "ro",
+    "scotland": "gb-sct",
+    "wales": "gb-wls",
+    "slovakia": "sk",
+    "slovenia": "si",
+    "finland": "fi",
+    "ireland": "ie",
+    "republicofireland": "ie",
+    "iceland": "is",
+    "jamaica": "jm",
+    "costarica": "cr",
+    "panama": "pa",
+    "honduras": "hn",
+    "elsalvador": "sv",
+    "haiti": "ht",
+    "australia": "au"
 }
 
 def get_country_code(team_name: str) -> Optional[str]:
     clean_team = clean_name(team_name)
+    # Exact match first
+    for k, v in _COUNTRY_CODES.items():
+        if clean_name(k) == clean_team:
+            return v
+    # Substring match second
     for k, v in _COUNTRY_CODES.items():
         clean_k = clean_name(k)
         if clean_k in clean_team or clean_team in clean_k:
@@ -1579,15 +1637,19 @@ def _trunc(text: str, max_chars: int = 400) -> str:
 
 def clean_name(name: str) -> str:
     """Normalizes team names for fuzzy matching."""
-    return (
-        name.lower()
-        .replace(" ", "")
-        .replace("ç", "c")
-        .replace("ã", "a")
-        .replace("í", "i")
-        .replace("é", "e")
-        .replace("&", "and")
-    )
+    # Convert to lowercase
+    n = name.lower()
+    # Normalize special characters/unicodes
+    n = n.replace("\ufffd", "c")  # handles Curaao/Curaao style encoding issues
+    n = n.replace("ç", "c")
+    n = n.replace("ã", "a")
+    n = n.replace("í", "i")
+    n = n.replace("é", "e")
+    n = n.replace("&", "and")
+    # Remove any characters that are not lowercase letters or digits
+    import re
+    n = re.sub(r'[^a-z0-9]', '', n)
+    return n
 
 
 def compress_and_structure_news(raw_news: str) -> str:
@@ -3488,11 +3550,11 @@ def render_main_dashboard():
                     
                     home_style = ""
                     if home_code:
-                        home_style = f"background: linear-gradient(to right, rgba(15, 23, 42, 0.90), rgba(15, 23, 42, 0.65)), url('https://flagcdn.com/w160/{home_code}.png') no-repeat center; background-size: cover;"
+                        home_style = f"background: linear-gradient(to right, rgba(15, 23, 42, 0.70), rgba(15, 23, 42, 0.35)), url('https://flagcdn.com/w160/{home_code}.png') no-repeat center; background-size: cover;"
                         
                     away_style = ""
                     if away_code:
-                        away_style = f"background: linear-gradient(to left, rgba(15, 23, 42, 0.90), rgba(15, 23, 42, 0.65)), url('https://flagcdn.com/w160/{away_code}.png') no-repeat center; background-size: cover;"
+                        away_style = f"background: linear-gradient(to left, rgba(15, 23, 42, 0.70), rgba(15, 23, 42, 0.35)), url('https://flagcdn.com/w160/{away_code}.png') no-repeat center; background-size: cover;"
                         
                     st.markdown(f"""
 <div class="scoreboard">
