@@ -544,28 +544,22 @@ def scrape_confirmed_lineup(home_team: str, away_team: str) -> Optional[Dict[str
     }
 
 
-def fetch_and_store_lineups_for_today(match_objects: List["Match"], api_key: str) -> None:
+def fetch_and_store_lineups(match_objects: List["Match"], api_key: str) -> None:
     """
-    For each match in match_objects that is scheduled TODAY (local date), attempts to:
-      1. Scrape a confirmed/announced starting XI from the web.
-      2. Fall back to AI-generated projected lineup if scraping finds nothing.
-    Updates the match record in the DB with the lineup and lineup_status.
-    Matches scheduled for future dates are completely skipped.
+    For each match in match_objects that does NOT already have a confirmed 11-man lineup,
+    fetches the lineup via a 3-tier priority:
+      1. API-Football /fixtures/lineups  (most reliable — official data when announced)
+      2. Web scrape (DuckDuckGo/Yahoo) for confirmed starting XI articles
+      3. Gemini AI projection (always produces a result — guaranteed non-empty fallback)
+    Updates the match record in Supabase.
+    Works for any date's matches — not restricted to today.
     """
-    today_local = date.today()
+    af_key = os.environ.get("API_FOOTBALL_KEY", "")
 
     for match in match_objects:
-        # Only process today's games — skip future dates entirely
-        match_date_utc = match.kickoff_time.date()
-        # Compare against today in Central Time (UTC-5 / UTC-6) to be safe
-        from datetime import timedelta
-        match_date_ct = (match.kickoff_time - timedelta(hours=5)).date()
-        if match_date_utc != today_local and match_date_ct != today_local:
-            continue  # Future match — skip
-
-        # Don't overwrite an already-confirmed lineup
+        # Skip if already confirmed with a full 11-man lineup
         if match.lineup_status == LineupStatus.CONFIRMED and len(match.home_lineup) >= 11:
-            st.write(f"  ✅ `{match.home_team} vs {match.away_team}`: lineup already confirmed, skipping.")
+            st.write(f"  ✅ `{match.home_team} vs {match.away_team}`: confirmed lineup already stored, skipping.")
             continue
 
         home_lineup: List[str] = []
@@ -573,48 +567,107 @@ def fetch_and_store_lineups_for_today(match_objects: List["Match"], api_key: str
         new_status = LineupStatus.PROJECTED
         source_label = ""
 
-        # --- Step 1: Try to scrape a confirmed lineup ---
-        try:
-            scraped = scrape_confirmed_lineup(match.home_team, match.away_team)
-            if scraped and len(scraped.get("home_lineup", [])) >= 8:
-                home_lineup = scraped["home_lineup"][:11]
-                away_lineup = scraped.get("away_lineup", [])[:11]
-                if scraped.get("confirmed") and len(away_lineup) >= 8:
-                    new_status = LineupStatus.CONFIRMED
-                    source_label = "🟢 Confirmed (web)"
-                else:
+        # -------------------------------------------------------------------
+        # TIER 1: API-Football /fixtures/lineups
+        # Looks up the fixture by date + team, then fetches its official lineup.
+        # Only returns data once the lineup has been officially announced (~1hr before KO).
+        # -------------------------------------------------------------------
+        if af_key:
+            try:
+                headers = {"x-apisports-key": af_key}
+                match_date = match.kickoff_time.date().isoformat()
+                home_id = _af_find_team_id(match.home_team)
+                away_id = _af_find_team_id(match.away_team)
+
+                if home_id:
+                    fx_resp = requests.get(
+                        f"{_AF_BASE}/fixtures",
+                        headers=headers,
+                        params={"league": _AF_WC_LEAGUE, "season": _AF_WC_SEASON,
+                                "team": home_id, "date": match_date},
+                        timeout=10
+                    )
+                    if fx_resp.status_code == 200:
+                        fx_list = fx_resp.json().get("response", [])
+                        # Find the fixture matching both teams
+                        fx_id = None
+                        for fx in fx_list:
+                            h_id = fx["teams"]["home"]["id"]
+                            a_id = fx["teams"]["away"]["id"]
+                            if (h_id == home_id and a_id == away_id) or \
+                               (h_id == away_id and a_id == home_id):
+                                fx_id = fx["fixture"]["id"]
+                                break
+
+                        if fx_id:
+                            lu_resp = requests.get(
+                                f"{_AF_BASE}/fixtures/lineups",
+                                headers=headers,
+                                params={"fixture": fx_id},
+                                timeout=10
+                            )
+                            if lu_resp.status_code == 200:
+                                lu_data = lu_resp.json().get("response", [])
+                                for team_lu in lu_data:
+                                    tid = team_lu["team"]["id"]
+                                    starters = [p["player"]["name"] for p in team_lu.get("startXI", [])]
+                                    if tid == home_id:
+                                        home_lineup = starters
+                                    elif tid == away_id:
+                                        away_lineup = starters
+
+                                if len(home_lineup) >= 11 and len(away_lineup) >= 11:
+                                    new_status = LineupStatus.CONFIRMED
+                                    source_label = "🟢 Confirmed (API-Football)"
+                                    print(f"[AF] Lineups confirmed for {match.match_id}: {len(home_lineup)}/{len(away_lineup)} players")
+            except Exception as af_err:
+                print(f"[DEBUG] API-Football lineup fetch failed for {match.match_id}: {af_err}")
+
+        # -------------------------------------------------------------------
+        # TIER 2: Web scrape (DuckDuckGo / Yahoo News)
+        # Used when API-Football hasn't announced the lineup yet.
+        # -------------------------------------------------------------------
+        if len(home_lineup) < 11 or len(away_lineup) < 11:
+            try:
+                scraped = scrape_confirmed_lineup(match.home_team, match.away_team)
+                if scraped and len(scraped.get("home_lineup", [])) >= 8:
+                    if len(home_lineup) < 11:
+                        home_lineup = scraped["home_lineup"][:11]
+                    if len(away_lineup) < 11:
+                        away_lineup = scraped.get("away_lineup", [])[:11]
+                    if scraped.get("confirmed") and len(home_lineup) >= 8 and len(away_lineup) >= 8:
+                        new_status = LineupStatus.CONFIRMED
+                        source_label = "🟢 Confirmed (web)"
+                    else:
+                        source_label = "🟡 Partial (web scrape)"
+            except Exception as scrape_err:
+                print(f"[DEBUG] Web lineup scrape failed for {match.match_id}: {scrape_err}")
+
+        # -------------------------------------------------------------------
+        # TIER 3: Gemini AI projection
+        # Always runs if either lineup is still incomplete — guarantees non-empty result.
+        # -------------------------------------------------------------------
+        if (len(home_lineup) < 11 or len(away_lineup) < 11) and api_key:
+            try:
+                gen = generate_projected_lineups(match.home_team, match.away_team, api_key)
+                if gen:
+                    if len(home_lineup) < 11:
+                        home_lineup = gen.get("home_lineup", [])
+                    if len(away_lineup) < 11:
+                        away_lineup = gen.get("away_lineup", [])
+                    if not source_label:
+                        source_label = "🔵 AI Projected"
+                    elif "Confirmed" not in source_label:
+                        source_label += " + AI fill"
                     new_status = LineupStatus.PROJECTED
-                    source_label = "🟡 Partially scraped (web)"
-        except Exception as scrape_err:
-            print(f"[DEBUG] Lineup scrape error for {match.match_id}: {scrape_err}")
-
-        # --- Step 2: Fall back to AI generation if scrape didn't produce enough names ---
-        needs_ai_home = len(home_lineup) < 11
-        needs_ai_away = len(away_lineup) < 11
-
-        if needs_ai_home or needs_ai_away:
-            if api_key:
-                try:
-                    gen = generate_projected_lineups(match.home_team, match.away_team, api_key)
-                    if gen:
-                        if needs_ai_home:
-                            home_lineup = gen.get("home_lineup", [])
-                        if needs_ai_away:
-                            away_lineup = gen.get("away_lineup", [])
-                        if not source_label:
-                            source_label = "🔵 AI Projected"
-                        else:
-                            source_label += " + AI fill"
-                        # Status stays PROJECTED when AI fills in any slots
-                        new_status = LineupStatus.PROJECTED
-                except Exception as gen_err:
-                    print(f"[DEBUG] AI lineup generation error for {match.match_id}: {gen_err}")
+            except Exception as gen_err:
+                print(f"[DEBUG] AI lineup generation failed for {match.match_id}: {gen_err}")
 
         if not home_lineup and not away_lineup:
-            st.write(f"  ⚠️ `{match.home_team} vs {match.away_team}`: could not retrieve lineup.")
+            st.write(f"  ⚠️ `{match.home_team} vs {match.away_team}`: all lineup sources failed.")
             continue
 
-        # --- Update the match in the DB ---
+        # --- Persist to Supabase ---
         try:
             supabase.table("matches").update({
                 "home_lineup": home_lineup,
@@ -622,7 +675,6 @@ def fetch_and_store_lineups_for_today(match_objects: List["Match"], api_key: str
                 "lineup_status": new_status
             }).eq("match_id", match.match_id).execute()
 
-            # Reflect in the in-memory object too
             match.home_lineup = home_lineup
             match.away_lineup = away_lineup
             match.lineup_status = new_status
@@ -630,6 +682,12 @@ def fetch_and_store_lineups_for_today(match_objects: List["Match"], api_key: str
             st.write(f"  {source_label} — `{match.home_team} vs {match.away_team}` ({len(home_lineup)} / {len(away_lineup)} players)")
         except Exception as db_err:
             print(f"[DEBUG] Failed to store lineup for {match.match_id}: {db_err}")
+
+
+# Keep old name as alias for backward compat
+fetch_and_store_lineups_for_today = fetch_and_store_lineups
+
+
 
 
 def generate_projected_lineups(home_team: str, away_team: str, api_key: str) -> Optional[Dict[str, List[str]]]:
@@ -3598,17 +3656,19 @@ def execute_sync_pipeline():
             all_matches.sort(key=lambda m: m.kickoff_time)
             st.session_state.all_matches = all_matches
 
-            # Step 2b: Fetch lineups for TODAY's matches only
-            today_matches = [
+            # Step 2b: Fetch lineups for the synced date's matches
+            # Runs for any date — AI projection always produces a result as final fallback.
+            target_matches = [
                 m for m in all_matches
-                if to_central_time(m.kickoff_time)[0].date() == date.today()
+                if to_central_time(m.kickoff_time)[0].date() == target_date
             ]
-            if today_matches and target_date == date.today():
-                status.update(label=f"Fetching lineups for {len(today_matches)} today's match(es)...")
-                st.write("**⚽ Lineup Discovery (Today's Matches Only)**")
-                fetch_and_store_lineups_for_today(all_matches, api_key)
-            elif target_date != date.today():
-                st.info(f"ℹ️ Lineup lookup skipped — only runs for today's games (selected date: {target_date}).")
+            if target_matches:
+                status.update(label=f"Fetching lineups for {len(target_matches)} match(es) on {target_date}...")
+                st.write(f"**⚽ Lineup Discovery ({target_date})**")
+                fetch_and_store_lineups(target_matches, api_key)
+            else:
+                st.info(f"ℹ️ No matches found for {target_date} — lineup step skipped.")
+
 
             # Reset conviction picks so user can run fresh research on newly synced matches
             st.session_state.conviction_picks = {}
