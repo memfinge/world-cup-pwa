@@ -2044,50 +2044,191 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                 display_groups = bovada_match.get("displayGroups", [])
                 for dg in display_groups:
                     dg_desc = dg.get("description", "")
-                    if dg_desc == "Goalscorer":
+
+                    # --- Game Lines: Moneyline, Spread, Total ---
+                    if dg_desc == "Game Lines":
                         for market in dg.get("markets", []):
                             m_desc = market.get("description", "")
+                            outcomes = []
+                            for out in market.get("outcomes", []):
+                                outcomes.append({
+                                    "selection": out.get("description"),
+                                    "price": out.get("price", {}).get("american")
+                                })
+                            if m_desc == "3-Way Moneyline":
+                                bovada_odds_summary["Moneyline"] = outcomes
+                            elif m_desc == "Total":
+                                bovada_odds_summary["Total Goals"] = outcomes
+                            elif m_desc == "Goal Spread":
+                                bovada_odds_summary["Spread"] = outcomes
+
+                    # --- Goalscorer: Anytime, First, 2+, Hat Trick, Header ---
+                    elif dg_desc == "Goalscorer":
+                        for market in dg.get("markets", []):
+                            m_desc = market.get("description", "")
+                            outcomes = []
+                            for out in market.get("outcomes", []):
+                                outcomes.append({
+                                    "player": out.get("description"),
+                                    "price": out.get("price", {}).get("american")
+                                })
                             if m_desc == "Anytime Goal Scorer":
-                                outcomes = []
-                                for out in market.get("outcomes", []):
-                                    outcomes.append({
-                                        "player": out.get("description"),
-                                        "price": out.get("price", {}).get("american")
-                                    })
                                 bovada_odds_summary["Anytime Goalscorer"] = outcomes
+                            elif m_desc == "First Goal Scorer":
+                                bovada_odds_summary["First Goalscorer"] = outcomes
+                            elif m_desc == "To Score 2 or More Goals":
+                                bovada_odds_summary["To Score 2+ Goals"] = outcomes
+                            elif m_desc == "To Score a Hat Trick":
+                                bovada_odds_summary["Hat Trick Scorer"] = outcomes
+                            elif m_desc == "To Score a Header":
+                                bovada_odds_summary["Header Scorer"] = outcomes
+                            elif m_desc == "To Score or Assist a Goal":
+                                bovada_odds_summary["To Score or Assist"] = outcomes
+
+                    # --- Assists ---
                     elif dg_desc == "Assists":
                         for market in dg.get("markets", []):
                             m_desc = market.get("description", "")
+                            outcomes = []
+                            for out in market.get("outcomes", []):
+                                outcomes.append({
+                                    "player": out.get("description"),
+                                    "price": out.get("price", {}).get("american")
+                                })
                             if m_desc == "To Assist a Goal":
-                                outcomes = []
-                                for out in market.get("outcomes", []):
-                                    outcomes.append({
-                                        "player": out.get("description"),
-                                        "price": out.get("price", {}).get("american")
-                                    })
                                 bovada_odds_summary["To Assist a Goal"] = outcomes
-                    elif dg_desc == "Corners":
+                            elif m_desc == "To Score or Assist a Goal":
+                                bovada_odds_summary["To Score or Assist (Assists)"] = outcomes
+
+                    # --- Player Props: Shots, Shots on Target, Saves, Tackles per player ---
+                    elif dg_desc == "Player Props":
+                        shots_markets = {}
+                        sot_markets = {}
+                        saves_markets = {}
+                        tackles_markets = {}
                         for market in dg.get("markets", []):
                             m_desc = market.get("description", "")
-                            if m_desc == "Total Corners":
-                                outcomes = []
-                                for out in market.get("outcomes", []):
-                                    outcomes.append({
-                                        "selection": out.get("description"),
-                                        "price": out.get("price", {}).get("american")
-                                    })
-                                bovada_odds_summary["Corners"] = outcomes
+                            outcomes = []
+                            for out in market.get("outcomes", []):
+                                outcomes.append({
+                                    "selection": out.get("description"),
+                                    "price": out.get("price", {}).get("american")
+                                })
+                            if m_desc.startswith("Shots on Target - "):
+                                player = m_desc.replace("Shots on Target - ", "")
+                                sot_markets[player] = outcomes
+                            elif m_desc.startswith("Shots - "):
+                                player = m_desc.replace("Shots - ", "")
+                                shots_markets[player] = outcomes
+                            elif m_desc.startswith("Saves - "):
+                                player = m_desc.replace("Saves - ", "")
+                                saves_markets[player] = outcomes
+                            elif m_desc.startswith("Tackles - "):
+                                player = m_desc.replace("Tackles - ", "")
+                                tackles_markets[player] = outcomes
+                        if shots_markets:
+                            bovada_odds_summary["Player Shots"] = shots_markets
+                        if sot_markets:
+                            bovada_odds_summary["Player Shots on Target"] = sot_markets
+                        if saves_markets:
+                            bovada_odds_summary["Player Saves"] = saves_markets
+                        if tackles_markets:
+                            bovada_odds_summary["Player Tackles"] = tackles_markets
+
+                    # --- Game Stats: Team-level shots / shots on target ---
+                    elif dg_desc == "Game Stats":
+                        game_stats = {}
+                        for market in dg.get("markets", []):
+                            m_desc = market.get("description", "")
+                            outcomes = []
+                            for out in market.get("outcomes", []):
+                                outcomes.append({
+                                    "selection": out.get("description"),
+                                    "price": out.get("price", {}).get("american")
+                                })
+                            game_stats[m_desc] = outcomes
+                        if game_stats:
+                            bovada_odds_summary["Game Stats"] = game_stats
+
+                    # --- Corners: Total, Race to X ---
+                    elif dg_desc == "Corners":
+                        corners_data = {}
+                        for market in dg.get("markets", []):
+                            m_desc = market.get("description", "")
+                            outcomes = []
+                            for out in market.get("outcomes", []):
+                                outcomes.append({
+                                    "selection": out.get("description"),
+                                    "price": out.get("price", {}).get("american")
+                                })
+                            corners_data[m_desc] = outcomes
+                        if "Total Corners" in corners_data:
+                            bovada_odds_summary["Corners"] = corners_data["Total Corners"]
+                        bovada_odds_summary["Corners Markets"] = corners_data
+
+                    # --- Cards: Total Cards O/U, Player to be shown a card ---
+                    elif dg_desc == "Cards":
+                        for market in dg.get("markets", []):
+                            m_desc = market.get("description", "")
+                            outcomes = []
+                            for out in market.get("outcomes", []):
+                                outcomes.append({
+                                    "selection": out.get("description"),
+                                    "price": out.get("price", {}).get("american")
+                                })
+                            if m_desc == "Total Cards Under/Over":
+                                bovada_odds_summary["Total Cards"] = outcomes
+                            elif m_desc == "To be Shown a Card":
+                                bovada_odds_summary["Player Cards"] = outcomes
+
+                    # --- Game Props: BTTS, Double Chance, Draw No Bet, Correct Score ---
                     elif dg_desc == "Game Props":
                         for market in dg.get("markets", []):
                             m_desc = market.get("description", "")
+                            outcomes = []
+                            for out in market.get("outcomes", []):
+                                outcomes.append({
+                                    "selection": out.get("description"),
+                                    "price": out.get("price", {}).get("american")
+                                })
                             if m_desc == "Both Teams To Score":
-                                outcomes = []
-                                for out in market.get("outcomes", []):
-                                    outcomes.append({
-                                        "selection": out.get("description"),
-                                        "price": out.get("price", {}).get("american")
-                                    })
                                 bovada_odds_summary["Both Teams to Score"] = outcomes
+                            elif m_desc == "Double Chance":
+                                bovada_odds_summary["Double Chance"] = outcomes
+                            elif m_desc == "Draw No Bet":
+                                bovada_odds_summary["Draw No Bet"] = outcomes
+                            elif m_desc == "Correct Score":
+                                bovada_odds_summary["Correct Score"] = outcomes
+
+                    # --- Combo Props: Result + BTTS, Result + O/U ---
+                    elif dg_desc == "Combo Props":
+                        combo_data = {}
+                        for market in dg.get("markets", []):
+                            m_desc = market.get("description", "")
+                            outcomes = []
+                            for out in market.get("outcomes", []):
+                                outcomes.append({
+                                    "selection": out.get("description"),
+                                    "price": out.get("price", {}).get("american")
+                                })
+                            combo_data[m_desc] = outcomes
+                        if combo_data:
+                            bovada_odds_summary["Combo Props"] = combo_data
+
+                    # --- Alternate Lines ---
+                    elif dg_desc == "Alternate Lines":
+                        alt_data = {}
+                        for market in dg.get("markets", []):
+                            m_desc = market.get("description", "")
+                            outcomes = []
+                            for out in market.get("outcomes", []):
+                                outcomes.append({
+                                    "selection": out.get("description"),
+                                    "price": out.get("price", {}).get("american")
+                                })
+                            alt_data[m_desc] = outcomes
+                        if alt_data:
+                            bovada_odds_summary["Alternate Lines"] = alt_data
 
             return m, match_snippets, bovada_odds_summary, dk_promo_local
 
@@ -2125,7 +2266,17 @@ Based on the following actual World Cup 2026 matches scheduled for {target_date_
 We have fetched official live market odds data from The Odds API (if available):
 {api_odds_context if api_odds_context else "None available"}
 
-We have also fetched live player props, assists, and corners from Bovada (if available):
+We have also fetched comprehensive live data from Bovada (if available), including:
+- Game Lines (Moneyline, Spread, Total)
+- All Goalscorer markets (Anytime, First, 2+, Hat Trick, Header)
+- Player Props per individual player (Shots, Shots on Target, Saves, Tackles)
+- Game Stats (team-level total shots, total shots on target)
+- Corners (Total Corners and Race to X)
+- Cards (Total Cards O/U, Player Cards)
+- Assists (To Assist a Goal)
+- Game Props (BTTS, Double Chance, Draw No Bet, Correct Score)
+- Combo Props (Result + BTTS, Result + Over/Under)
+- Alternate Lines
 {bovada_odds_context if bovada_odds_context else "None available"}
 
 And we have scraped the following recent web search snippets (including player prop lines and sportsbook previews) for these matchups:
@@ -2135,16 +2286,36 @@ We have also scraped the following general and match-specific DraftKings promoti
 {dk_promos_context if dk_promos_context else "None available"}
 
 Task:
-Generate a unique match_id (e.g. "GER-CIV-2026") for each match, and provide realistic DraftKings betting odds (Moneyline, BTTS, Total Goals Over/Under, Spread, Corners Over/Under, Anytime Goalscorer, Player Shots Over/Under, Player Shots on Target Over/Under, and Promo/Boost) based on the team strengths, playing styles, and the real market lines provided above.
+Generate a unique match_id (e.g. "GER-CIV-2026") for each match, and provide betting odds for ALL available markets grounded on the real Bovada and Odds API data above.
 
 CRITICAL ODDS MAPPING REQUIREMENTS:
-1. Ground your generated odds on the consolidated live market odds (from The Odds API, Bovada, and web search snippets):
-   - For each match, if The Odds API data has consolidated odds for "Moneyline", "BTTS", "Total Goals (2.5)", or "Spread", you MUST output those exact points and price values in your output JSON fields. For example, if BTTS Yes is -165 in the API data, you MUST output -165. If Total Goals Over 2.5 is -164 in the API data, you MUST output Over 2.5 as -164.
-   - If the Bovada data contains "Anytime Goalscorer" or "To Assist a Goal" odds, you MUST output those exact player selections and prices in your Anytime Goalscorer fields. If Bovada contains "Corners" (e.g. Over/Under 9.5 Corners), you MUST output that corner line and price.
-   - If web search snippets mention specific player props or lines (e.g., Alexander Isak over 1.5 shots on target is +270), you MUST output those exact prices.
-   - If general DraftKings promotions, odds boosts, or match-specific promos/boosts are found in the snippets (e.g., "Alexander Isak to score boosted to +300", or a general odds boost), you MUST output these under market_type: "Promo/Boost" with the corresponding selection description and boosted odds.
-   - Only simulate or estimate odds if real market data for that specific market/selection is completely absent from all sources.
-
+1. For ALL markets where Bovada has live data, you MUST use those EXACT prices and selections:
+   - "Moneyline" → use Bovada 3-Way Moneyline prices exactly (Home, Away, Draw).
+   - "BTTS" → use Bovada "Both Teams to Score" prices exactly.
+   - "Total Goals" → use Bovada "Total Goals" prices exactly.
+   - "Spread" → use Bovada "Goal Spread" prices exactly.
+   - "Corners" → use Bovada "Total Corners" prices exactly.
+   - "Anytime Goalscorer" → output ALL players from Bovada with exact prices.
+   - "First Goalscorer" → output ALL players from Bovada with exact prices.
+   - "To Score 2+ Goals" → output ALL players from Bovada with exact prices.
+   - "Hat Trick Scorer" → output ALL players from Bovada with exact prices.
+   - "Header Scorer" → output ALL players from Bovada with exact prices.
+   - "To Assist a Goal" → output ALL players from Bovada with exact prices.
+   - "To Score or Assist" → output ALL players from Bovada with exact prices.
+   - "Player Shots on Target" → output ALL players, ALL outcome lines from Bovada with exact prices.
+   - "Player Shots" → output ALL players, ALL outcome lines from Bovada with exact prices.
+   - "Player Saves" → output ALL goalkeepers, ALL outcome lines from Bovada with exact prices.
+   - "Player Tackles" → output ALL players, ALL outcome lines from Bovada with exact prices.
+   - "Game Stats" → use Bovada team-level shots/SOT lines with exact prices.
+   - "Total Cards" → use Bovada "Total Cards" lines with exact prices.
+   - "Player Cards" → output ALL players from Bovada with exact prices.
+   - "Double Chance" → use Bovada "Double Chance" prices exactly.
+   - "Draw No Bet" → use Bovada "Draw No Bet" prices exactly.
+   - "Correct Score" → use Bovada "Correct Score" prices exactly.
+   - "Combo Props" → use Bovada "Combo Props" prices exactly.
+2. Format Player Prop selections as: "Player Name Over X.5 Shots on Target", "Player Name 2+ Tackles", etc.
+3. Only estimate/simulate odds when NO real data exists from any source.
+4. For Promo/Boost: only add if found in DraftKings snippet data.
 
 
 Format your output strictly as a JSON object matching this schema:
@@ -2161,92 +2332,47 @@ Format your output strictly as a JSON object matching this schema:
      }}
   ],
   "odds": [
-     {{
-        "match_id": "string (matching the match_id above)",
-        "market_type": "Moneyline",
-        "selection": "string (Home Team name, Away Team name, or Draw)",
-        "dk_odds": integer
-     }},
-     {{
-        "match_id": "string (matching the match_id above)",
-        "market_type": "BTTS",
-        "selection": "Yes",
-        "dk_odds": integer
-     }},
-     {{
-        "match_id": "string (matching the match_id above)",
-        "market_type": "BTTS",
-        "selection": "No",
-        "dk_odds": integer
-     }},
-     {{
-        "match_id": "string (matching the match_id above)",
-        "market_type": "Total Goals",
-        "selection": "string (e.g., Over 2.5 or Over 3.5)",
-        "dk_odds": integer
-     }},
-     {{
-        "match_id": "string (matching the match_id above)",
-        "market_type": "Total Goals",
-        "selection": "string (e.g., Under 2.5 or Under 3.5)",
-        "dk_odds": integer
-     }},
-     {{
-        "match_id": "string (matching the match_id above)",
-        "market_type": "Spread",
-        "selection": "string (e.g., Germany -1.5 or Germany -0.5)",
-        "dk_odds": integer
-     }},
-     {{
-        "match_id": "string (matching the match_id above)",
-        "market_type": "Spread",
-        "selection": "string (e.g., Ivory Coast +1.5 or Ivory Coast +0.5)",
-        "dk_odds": integer
-     }},
-     {{
-        "match_id": "string (matching the match_id above)",
-        "market_type": "Corners",
-        "selection": "string (e.g., Over 9.5 Corners or Under 9.5 Corners)",
-        "dk_odds": integer
-     }},
-     {{
-        "match_id": "string (matching the match_id above)",
-        "market_type": "Anytime Goalscorer",
-        "selection": "string (e.g., Player Name to Score)",
-        "dk_odds": integer
-     }},
-      {{
-        "match_id": "string (matching the match_id above)",
-        "market_type": "Player Shots",
-        "selection": "string (e.g., Player Name Over 2.5 Shots or Player Name Under 2.5 Shots)",
-        "dk_odds": integer
-      }},
-      {{
-        "match_id": "string (matching the match_id above)",
-        "market_type": "Player Shots on Target",
-        "selection": "string (e.g., Player Name Over 1.5 Shots on Target or Player Name Under 1.5 Shots on Target)",
-        "dk_odds": integer
-      }},
-      {{
-        "match_id": "string (matching the match_id above)",
-        "market_type": "Promo/Boost",
-        "selection": "string (e.g., Alexander Isak to Score (Boosted +300, was +220))",
-        "dk_odds": integer
-      }}
-   ]
+     {{"match_id": "...", "market_type": "Moneyline", "selection": "Home Team name, Away Team name, or Draw", "dk_odds": integer}},
+     {{"match_id": "...", "market_type": "BTTS", "selection": "Yes or No", "dk_odds": integer}},
+     {{"match_id": "...", "market_type": "Total Goals", "selection": "Over X.5 or Under X.5", "dk_odds": integer}},
+     {{"match_id": "...", "market_type": "Spread", "selection": "Team Name +/-X.5", "dk_odds": integer}},
+     {{"match_id": "...", "market_type": "Corners", "selection": "Over Y.5 Corners or Under Y.5 Corners", "dk_odds": integer}},
+     {{"match_id": "...", "market_type": "Anytime Goalscorer", "selection": "Player Name to Score", "dk_odds": integer}},
+     {{"match_id": "...", "market_type": "First Goalscorer", "selection": "Player Name", "dk_odds": integer}},
+     {{"match_id": "...", "market_type": "To Score 2+ Goals", "selection": "Player Name", "dk_odds": integer}},
+     {{"match_id": "...", "market_type": "Hat Trick Scorer", "selection": "Player Name", "dk_odds": integer}},
+     {{"match_id": "...", "market_type": "Header Scorer", "selection": "Player Name", "dk_odds": integer}},
+     {{"match_id": "...", "market_type": "To Assist a Goal", "selection": "Player Name", "dk_odds": integer}},
+     {{"match_id": "...", "market_type": "To Score or Assist", "selection": "Player Name", "dk_odds": integer}},
+     {{"match_id": "...", "market_type": "Player Shots", "selection": "Player Name Over/Under X.5 Shots", "dk_odds": integer}},
+     {{"match_id": "...", "market_type": "Player Shots on Target", "selection": "Player Name Over/Under X.5 Shots on Target", "dk_odds": integer}},
+     {{"match_id": "...", "market_type": "Player Saves", "selection": "Player Name Over/Under X.5 Saves", "dk_odds": integer}},
+     {{"match_id": "...", "market_type": "Player Tackles", "selection": "Player Name Over/Under X.5 Tackles", "dk_odds": integer}},
+     {{"match_id": "...", "market_type": "Game Stats", "selection": "e.g. Total Shots Over 22.5", "dk_odds": integer}},
+     {{"match_id": "...", "market_type": "Total Cards", "selection": "Over/Under X.5 Cards", "dk_odds": integer}},
+     {{"match_id": "...", "market_type": "Player Cards", "selection": "Player Name to be Shown a Card", "dk_odds": integer}},
+     {{"match_id": "...", "market_type": "Double Chance", "selection": "e.g. Home/Draw or Away/Draw", "dk_odds": integer}},
+     {{"match_id": "...", "market_type": "Draw No Bet", "selection": "Home Team or Away Team", "dk_odds": integer}},
+     {{"match_id": "...", "market_type": "Correct Score", "selection": "e.g. 1-0 or 2-1", "dk_odds": integer}},
+     {{"match_id": "...", "market_type": "Combo Props", "selection": "e.g. Japan win and Yes BTTS", "dk_odds": integer}},
+     {{"match_id": "...", "market_type": "Promo/Boost", "selection": "Descriptive boosted selection string", "dk_odds": integer}}
+  ]
 }}
 
 Guidelines:
-1. Generate three Moneyline selections per match: the Home Team name, the Away Team name, and "Draw" exactly.
-2. Generate two BTTS selections per match: "Yes" and "No".
-3. Generate two Total Goals selections per match: "Over X.5" and "Under X.5" (where X.5 is a realistic line for the match, typically 1.5, 2.5, or 3.5 based on team offensive/defensive styles).
-4. Generate two Spread selections per match: one for the Home Team (e.g., Home Team name -1.5 or -2.5) and one for the Away Team (e.g., Away Team name +1.5 or +2.5), using a realistic handicap line based on the strength difference between the teams (do not use +0.5 or -0.5 spreads, as those are equivalent to Double Chance or Moneyline).
-5. Generate two Corners selections per match: "Over Y.5 Corners" and "Under Y.5 Corners" (where Y.5 is a realistic corner line, typically 8.5, 9.5, or 10.5 depending on tactical wing play and styles).
-6. Generate four Anytime Goalscorer selections per match: 2 expected key players/star strikers per team (e.g., "Harry Kane to Score").
-7. Generate four Player Shots selections per match: Over and Under lines for 1 key shooter per team (e.g., "Musiala Over 2.5 Shots" and "Musiala Under 2.5 Shots", and "Haller Over 1.5 Shots" and "Haller Under 1.5 Shots").
-8. Generate four Player Shots on Target selections per match: Over and Under lines for 1 key shooter per team (e.g., "Musiala Over 1.5 Shots on Target" and "Musiala Under 1.5 Shots on Target", and "Haller Over 0.5 Shots on Target" and "Haller Under 0.5 Shots on Target").
-9. If any DraftKings odds boosts, super boosts, or promotions are found in the search snippets for a match, generate a "Promo/Boost" market type entry with a descriptive selection string and the boosted odds value (e.g. 300 for +300).
-10. Use realistic betting odds representation (American odds, e.g. +150, -110, etc.).
+1. Three Moneyline selections per match using Bovada exact prices.
+2. Two BTTS selections (Yes/No) using Bovada exact prices.
+3. Two Total Goals selections using the exact Bovada line and prices.
+4. Two Spread selections using the exact Bovada handicap and prices.
+5. Two Corners selections using the exact Bovada Total Corners line and prices.
+6. Anytime Goalscorer, First Goalscorer, To Score 2+ Goals, Hat Trick Scorer, Header Scorer: output ALL players from Bovada with exact prices.
+7. To Assist a Goal and To Score or Assist: output ALL players from Bovada with exact prices.
+8. Player Shots, Player SOT, Player Saves, Player Tackles: output ALL players, ALL lines from Bovada with exact prices. Format: "Player Name Over/Under X.5 [stat]".
+9. Game Stats (team shots/SOT): output all available Bovada lines exactly.
+10. Total Cards and Player Cards: output all Bovada lines exactly.
+11. Double Chance, Draw No Bet, Correct Score, Combo Props: use Bovada prices exactly.
+12. Promo/Boost: only include if found in DraftKings snippet data.
+13. Use integer American odds (EVEN → 100, +150 → 150, -110 → -110).
 """
         content = generate_content_with_fallback(api_key, prompt, json_mode=True)
         
