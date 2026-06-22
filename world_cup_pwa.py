@@ -3568,241 +3568,243 @@ def render_main_dashboard():
 </div>
 """, unsafe_allow_html=True)
 
-                    # Create Tabs
-                    tab_match, tab_odds, tab_tactics, tab_convictions = st.tabs([
-                        "📋 Match & Lineups",
-                        "📊 Market Odds",
-                        "🧠 Tactical Research",
-                        "🔥 AI Convictions"
-                    ])
+                    # Collapsible details expander
+                    with st.expander("🔍 Match Details & Analysis", expanded=False):
+                        # Create Tabs
+                        tab_match, tab_odds, tab_tactics, tab_convictions = st.tabs([
+                            "📋 Match & Lineups",
+                            "📊 Market Odds",
+                            "🧠 Tactical Research",
+                            "🔥 AI Convictions"
+                        ])
 
-                    with tab_match:
-                        # Rosters side-by-side
-                        col_h_lineup, col_a_lineup = st.columns(2)
-                        with col_h_lineup:
-                            st.markdown(f"**🛡️ {match.home_team} Lineup**")
-                            if match.home_lineup:
-                                for idx, p in enumerate(match.home_lineup):
-                                    st.markdown(f"{idx+1}. {p}")
-                            else:
-                                st.caption("No lineup data.")
-                        with col_a_lineup:
-                            st.markdown(f"**⚔️ {match.away_team} Lineup**")
-                            if match.away_lineup:
-                                for idx, p in enumerate(match.away_lineup):
-                                    st.markdown(f"{idx+1}. {p}")
-                            else:
-                                st.caption("No lineup data.")
+                        with tab_match:
+                            # Rosters side-by-side
+                            col_h_lineup, col_a_lineup = st.columns(2)
+                            with col_h_lineup:
+                                st.markdown(f"**🛡️ {match.home_team} Lineup**")
+                                if match.home_lineup:
+                                    for idx, p in enumerate(match.home_lineup):
+                                        st.markdown(f"{idx+1}. {p}")
+                                else:
+                                    st.caption("No lineup data.")
+                            with col_a_lineup:
+                                st.markdown(f"**⚔️ {match.away_team} Lineup**")
+                                if match.away_lineup:
+                                    for idx, p in enumerate(match.away_lineup):
+                                        st.markdown(f"{idx+1}. {p}")
+                                else:
+                                    st.caption("No lineup data.")
 
-                        st.markdown("---")
-                        # Collapsible Sandbox editor for tactical lineups and odds
-                        with st.expander("🛠️ Match Sandbox (Roster & Odds Editor)", expanded=False):
-                            col_status, col_gen = st.columns([1, 1])
-                            with col_status:
-                                new_status = st.selectbox(
-                                    "Lineup Status",
-                                    options=[LineupStatus.PROJECTED, LineupStatus.CONFIRMED],
-                                    index=0 if match.lineup_status == LineupStatus.PROJECTED else 1,
-                                    key=f"status_sel_{match_id}"
+                            st.markdown("---")
+                            # Collapsible Sandbox editor for tactical lineups and odds
+                            with st.expander("🛠️ Match Sandbox (Roster & Odds Editor)", expanded=False):
+                                col_status, col_gen = st.columns([1, 1])
+                                with col_status:
+                                    new_status = st.selectbox(
+                                        "Lineup Status",
+                                        options=[LineupStatus.PROJECTED, LineupStatus.CONFIRMED],
+                                        index=0 if match.lineup_status == LineupStatus.PROJECTED else 1,
+                                        key=f"status_sel_{match_id}"
+                                    )
+                                with col_gen:
+                                    st.write("") # vertical offset
+                                    if st.button("🔵 Generate AI Projected Lineup", key=f"gen_lineup_{match_id}", use_container_width=True):
+                                        if not api_key:
+                                            st.error("Please enter your Gemini API Key in the sidebar.")
+                                        else:
+                                            with st.spinner("Generating starting XI..."):
+                                                gen_res = generate_projected_lineups(match.home_team, match.away_team, api_key)
+                                                if gen_res:
+                                                    match.home_lineup = gen_res["home_lineup"]
+                                                    match.away_lineup = gen_res["away_lineup"]
+                                                    match.lineup_status = new_status
+                                                    supabase.table("matches").update({
+                                                        "home_lineup": match.home_lineup,
+                                                        "away_lineup": match.away_lineup,
+                                                        "lineup_status": match.lineup_status
+                                                    }).eq("match_id", match_id).execute()
+                                                    st.toast("Projected rosters successfully generated!")
+                                                    st.rerun()
+                                                else:
+                                                    st.error("Failed to generate projected lineup.")
+                                                    
+                                home_txt = st.text_area(
+                                    f"{match.home_team} Lineup (comma-separated)",
+                                    value=", ".join(match.home_lineup),
+                                    key=f"home_lineup_txt_{match_id}"
                                 )
-                            with col_gen:
-                                st.write("") # vertical offset
-                                if st.button("🔵 Generate AI Projected Lineup", key=f"gen_lineup_{match_id}", use_container_width=True):
-                                    if not api_key:
-                                        st.error("Please enter your Gemini API Key in the sidebar.")
-                                    else:
-                                        with st.spinner("Generating starting XI..."):
-                                            gen_res = generate_projected_lineups(match.home_team, match.away_team, api_key)
-                                            if gen_res:
-                                                match.home_lineup = gen_res["home_lineup"]
-                                                match.away_lineup = gen_res["away_lineup"]
+                                away_txt = st.text_area(
+                                    f"{match.away_team} Lineup (comma-separated)",
+                                    value=", ".join(match.away_lineup),
+                                    key=f"away_lineup_txt_{match_id}"
+                                )
+                                
+                                st.markdown("---")
+                                st.subheader("📈 Odds Sandbox Override")
+                                
+                                # Retrieve odds for this match from the batched dictionary
+                                match_odds = _odds_by_match.get(match_id, [])
+                                    
+                                updated_odds_dict = {}
+                                if not match_odds:
+                                    st.caption("No odds found in the database. Run the sync pipeline first.")
+                                else:
+                                    # Group/sort odds by market type
+                                    match_odds.sort(key=lambda o: (o["market_type"], o["selection"]))
+                                    
+                                    # Render in 2 columns
+                                    odds_cols = st.columns(2)
+                                    for idx, odd in enumerate(match_odds):
+                                        col = odds_cols[idx % 2]
+                                        odd_id = odd["id"]
+                                        mtype = odd["market_type"]
+                                        selection = odd["selection"]
+                                        current_val = odd["dk_odds"]
+                                        
+                                        with col:
+                                            label = f"{mtype}: {selection}"
+                                            new_val = st.number_input(
+                                                label,
+                                                value=int(current_val),
+                                                step=5,
+                                                key=f"odd_input_{match_id}_{odd_id}"
+                                            )
+                                            updated_odds_dict[odd_id] = new_val
+                                            
+                                st.markdown("---")
+                                col_save, col_rerun = st.columns([1, 1])
+                                with col_save:
+                                    if st.button("💾 Save Sandbox Settings", key=f"save_lineup_{match_id}", use_container_width=True):
+                                        # Save lineups
+                                        match.home_lineup = [p.strip() for p in home_txt.split(",") if p.strip()]
+                                        match.away_lineup = [p.strip() for p in away_txt.split(",") if p.strip()]
+                                        match.lineup_status = new_status
+                                        supabase.table("matches").update({
+                                            "home_lineup": match.home_lineup,
+                                            "away_lineup": match.away_lineup,
+                                            "lineup_status": match.lineup_status
+                                        }).eq("match_id", match_id).execute()
+                                        
+                                        # Save custom odds overrides
+                                        for oid, val in updated_odds_dict.items():
+                                            supabase.table("odds").update({
+                                                "dk_odds": val
+                                            }).eq("id", oid).execute()
+                                            
+                                        st.toast("Sandbox settings saved successfully!")
+                                        st.rerun()
+                                with col_rerun:
+                                    # Render Rerun option only if picks already exist
+                                    if match_id in st.session_state.conviction_picks:
+                                        if st.button("🔄 Rerun Tactical Research", key=f"rerun_res_{match_id}", use_container_width=True):
+                                            if not api_key:
+                                                st.error("Please enter your Gemini API Key in the sidebar.")
+                                            else:
+                                                # Save lineups
+                                                match.home_lineup = [p.strip() for p in home_txt.split(",") if p.strip()]
+                                                match.away_lineup = [p.strip() for p in away_txt.split(",") if p.strip()]
                                                 match.lineup_status = new_status
                                                 supabase.table("matches").update({
                                                     "home_lineup": match.home_lineup,
                                                     "away_lineup": match.away_lineup,
                                                     "lineup_status": match.lineup_status
                                                 }).eq("match_id", match_id).execute()
-                                                st.toast("Projected rosters successfully generated!")
-                                                st.rerun()
-                                            else:
-                                                st.error("Failed to generate projected lineup.")
                                                 
-                            home_txt = st.text_area(
-                                f"{match.home_team} Lineup (comma-separated)",
-                                value=", ".join(match.home_lineup),
-                                key=f"home_lineup_txt_{match_id}"
-                            )
-                            away_txt = st.text_area(
-                                f"{match.away_team} Lineup (comma-separated)",
-                                value=", ".join(match.away_lineup),
-                                key=f"away_lineup_txt_{match_id}"
-                            )
-                            
-                            st.markdown("---")
-                            st.subheader("📈 Odds Sandbox Override")
-                            
-                            # Retrieve odds for this match from the batched dictionary
+                                                # Save custom odds overrides
+                                                for oid, val in updated_odds_dict.items():
+                                                    supabase.table("odds").update({
+                                                        "dk_odds": val
+                                                    }).eq("id", oid).execute()
+                                                    
+                                                with st.spinner(f"Re-evaluating {match.home_team} vs {match.away_team}..."):
+                                                    pick = evaluate_tactical_matchups_ai(match, api_key)
+                                                    st.session_state.conviction_picks[match_id] = pick
+                                                    st.rerun()
+
+                        with tab_odds:
                             match_odds = _odds_by_match.get(match_id, [])
-                                
-                            updated_odds_dict = {}
                             if not match_odds:
-                                st.caption("No odds found in the database. Run the sync pipeline first.")
+                                st.info("No odds found in the database. Run the sync pipeline to load odds.")
                             else:
-                                # Group/sort odds by market type
-                                match_odds.sort(key=lambda o: (o["market_type"], o["selection"]))
+                                st.markdown("### 📊 Market Odds Comparison")
+                                # Render live odds in a clean table
+                                import pandas as pd
+                                df_display = pd.DataFrame([
+                                    {"Market": o["market_type"], "Selection": o["selection"], "Odds": f"{o['dk_odds']:+d}"}
+                                    for o in match_odds
+                                ])
+                                st.table(df_display.set_index("Market"))
+
+                        # Retrieve Conviction Picks if they exist
+                        res_data = st.session_state.conviction_picks.get(match_id)
+                        picks = []
+                        injuries = {}
+                        key_battle = ""
+                        if res_data is not None:
+                            if isinstance(res_data, dict) and "error" in res_data:
+                                pass
+                            elif isinstance(res_data, list):
+                                picks = res_data
+                            else:
+                                picks = res_data.get("recommendations", []) or []
+                                injuries = res_data.get("injuries", {}) or {}
+                                key_battle = res_data.get("key_battle", "") or {}
                                 
-                                # Render in 2 columns
-                                odds_cols = st.columns(2)
-                                for idx, odd in enumerate(match_odds):
-                                    col = odds_cols[idx % 2]
-                                    odd_id = odd["id"]
-                                    mtype = odd["market_type"]
-                                    selection = odd["selection"]
-                                    current_val = odd["dk_odds"]
+                            # Filter out already-logged picks using the batched ledger dict
+                            logged_selections = _ledger_by_match.get(match_id, set())
+                            picks = [p for p in picks if (p["selection"].lower(), p["market_type"].lower()) not in logged_selections]
+
+                        with tab_tactics:
+                            if res_data is not None and isinstance(res_data, dict) and "error" in res_data:
+                                st.error(f"⚠️ AI Evaluation failed: {res_data['error']}")
+                                st.info("This is typically caused by a rate limit (429) on your free API Key. Please wait a minute and try Rerunning from the Match Sandbox in 'Match & Lineups' tab.")
+                            elif res_data is not None:
+                                if key_battle:
+                                    st.markdown(f"⚔️ **Key Battle:** {key_battle}")
+                                    st.divider()
                                     
-                                    with col:
-                                        label = f"{mtype}: {selection}"
-                                        new_val = st.number_input(
-                                            label,
-                                            value=int(current_val),
-                                            step=5,
-                                            key=f"odd_input_{match_id}_{odd_id}"
-                                        )
-                                        updated_odds_dict[odd_id] = new_val
-                                        
-                            st.markdown("---")
-                            col_save, col_rerun = st.columns([1, 1])
-                            with col_save:
-                                if st.button("💾 Save Sandbox Settings", key=f"save_lineup_{match_id}", use_container_width=True):
-                                    # Save lineups
-                                    match.home_lineup = [p.strip() for p in home_txt.split(",") if p.strip()]
-                                    match.away_lineup = [p.strip() for p in away_txt.split(",") if p.strip()]
-                                    match.lineup_status = new_status
-                                    supabase.table("matches").update({
-                                        "home_lineup": match.home_lineup,
-                                        "away_lineup": match.away_lineup,
-                                        "lineup_status": match.lineup_status
-                                    }).eq("match_id", match_id).execute()
-                                    
-                                    # Save custom odds overrides
-                                    for oid, val in updated_odds_dict.items():
-                                        supabase.table("odds").update({
-                                            "dk_odds": val
-                                        }).eq("id", oid).execute()
-                                        
-                                    st.toast("Sandbox settings saved successfully!")
-                                    st.rerun()
-                            with col_rerun:
-                                # Render Rerun option only if picks already exist
-                                if match_id in st.session_state.conviction_picks:
-                                    if st.button("🔄 Rerun Tactical Research", key=f"rerun_res_{match_id}", use_container_width=True):
+                                col_h, col_a = st.columns(2)
+                                with col_h:
+                                    st.markdown(f"🏥 **{match.home_team} Absences**")
+                                    home_abs = injuries.get("home_team_absences", [])
+                                    if home_abs:
+                                        for item in home_abs:
+                                            st.markdown(f"- **{item.get('player')}** ({item.get('status')}): *{item.get('reason')}*")
+                                    else:
+                                        st.caption("No major absences reported.")
+                                with col_a:
+                                    st.markdown(f"🏥 **{match.away_team} Absences**")
+                                    away_abs = injuries.get("away_team_absences", [])
+                                    if away_abs:
+                                        for item in away_abs:
+                                            st.markdown(f"- **{item.get('player')}** ({item.get('status')}): *{item.get('reason')}*")
+                                    else:
+                                        st.caption("No major absences reported.")
+                            else:
+                                st.info("Tactical Research context has not been fetched yet. Click below to run AI evaluation.")
+                                col1_btn, col2_btn = st.columns([1, 1])
+                                with col1_btn:
+                                    st.caption(f"Rosters: {len(match.home_lineup)} home / {len(match.away_lineup)} away")
+                                with col2_btn:
+                                    if st.button("🔍 Run AI Research", key=f"run_res_{match_id}", use_container_width=True):
                                         if not api_key:
                                             st.error("Please enter your Gemini API Key in the sidebar.")
                                         else:
-                                            # Save lineups
-                                            match.home_lineup = [p.strip() for p in home_txt.split(",") if p.strip()]
-                                            match.away_lineup = [p.strip() for p in away_txt.split(",") if p.strip()]
-                                            match.lineup_status = new_status
-                                            supabase.table("matches").update({
-                                                "home_lineup": match.home_lineup,
-                                                "away_lineup": match.away_lineup,
-                                                "lineup_status": match.lineup_status
-                                            }).eq("match_id", match_id).execute()
-                                            
-                                            # Save custom odds overrides
-                                            for oid, val in updated_odds_dict.items():
-                                                supabase.table("odds").update({
-                                                    "dk_odds": val
-                                                }).eq("id", oid).execute()
-                                                
-                                            with st.spinner(f"Re-evaluating {match.home_team} vs {match.away_team}..."):
+                                            with st.spinner(f"Evaluating {match.home_team} vs {match.away_team}..."):
                                                 pick = evaluate_tactical_matchups_ai(match, api_key)
                                                 st.session_state.conviction_picks[match_id] = pick
                                                 st.rerun()
 
-                    with tab_odds:
-                        match_odds = _odds_by_match.get(match_id, [])
-                        if not match_odds:
-                            st.info("No odds found in the database. Run the sync pipeline to load odds.")
-                        else:
-                            st.markdown("### 📊 Market Odds Comparison")
-                            # Render live odds in a clean table
-                            import pandas as pd
-                            df_display = pd.DataFrame([
-                                {"Market": o["market_type"], "Selection": o["selection"], "Odds": f"{o['dk_odds']:+d}"}
-                                for o in match_odds
-                            ])
-                            st.table(df_display.set_index("Market"))
-
-                    # Retrieve Conviction Picks if they exist
-                    res_data = st.session_state.conviction_picks.get(match_id)
-                    picks = []
-                    injuries = {}
-                    key_battle = ""
-                    if res_data is not None:
-                        if isinstance(res_data, dict) and "error" in res_data:
-                            pass
-                        elif isinstance(res_data, list):
-                            picks = res_data
-                        else:
-                            picks = res_data.get("recommendations", []) or []
-                            injuries = res_data.get("injuries", {}) or {}
-                            key_battle = res_data.get("key_battle", "") or {}
-                            
-                        # Filter out already-logged picks using the batched ledger dict
-                        logged_selections = _ledger_by_match.get(match_id, set())
-                        picks = [p for p in picks if (p["selection"].lower(), p["market_type"].lower()) not in logged_selections]
-
-                    with tab_tactics:
-                        if res_data is not None and isinstance(res_data, dict) and "error" in res_data:
-                            st.error(f"⚠️ AI Evaluation failed: {res_data['error']}")
-                            st.info("This is typically caused by a rate limit (429) on your free API Key. Please wait a minute and try Rerunning from the Match Sandbox in 'Match & Lineups' tab.")
-                        elif res_data is not None:
-                            if key_battle:
-                                st.markdown(f"⚔️ **Key Battle:** {key_battle}")
-                                st.divider()
-                                
-                            col_h, col_a = st.columns(2)
-                            with col_h:
-                                st.markdown(f"🏥 **{match.home_team} Absences**")
-                                home_abs = injuries.get("home_team_absences", [])
-                                if home_abs:
-                                    for item in home_abs:
-                                        st.markdown(f"- **{item.get('player')}** ({item.get('status')}): *{item.get('reason')}*")
+                        with tab_convictions:
+                            if res_data is not None:
+                                if picks:
+                                    for pick in picks:
+                                        render_conviction_card(pick)
                                 else:
-                                    st.caption("No major absences reported.")
-                            with col_a:
-                                st.markdown(f"🏥 **{match.away_team} Absences**")
-                                away_abs = injuries.get("away_team_absences", [])
-                                if away_abs:
-                                    for item in away_abs:
-                                        st.markdown(f"- **{item.get('player')}** ({item.get('status')}): *{item.get('reason')}*")
-                                else:
-                                    st.caption("No major absences reported.")
-                        else:
-                            st.info("Tactical Research context has not been fetched yet. Click below to run AI evaluation.")
-                            col1_btn, col2_btn = st.columns([1, 1])
-                            with col1_btn:
-                                st.caption(f"Rosters: {len(match.home_lineup)} home / {len(match.away_lineup)} away")
-                            with col2_btn:
-                                if st.button("🔍 Run AI Research", key=f"run_res_{match_id}", use_container_width=True):
-                                    if not api_key:
-                                        st.error("Please enter your Gemini API Key in the sidebar.")
-                                    else:
-                                        with st.spinner(f"Evaluating {match.home_team} vs {match.away_team}..."):
-                                            pick = evaluate_tactical_matchups_ai(match, api_key)
-                                            st.session_state.conviction_picks[match_id] = pick
-                                            st.rerun()
-
-                    with tab_convictions:
-                        if res_data is not None:
-                            if picks:
-                                for pick in picks:
-                                    render_conviction_card(pick)
+                                    st.info("AI Research complete: No pending value recommendations (all logged/used or none found).")
                             else:
-                                st.info("AI Research complete: No pending value recommendations (all logged/used or none found).")
-                        else:
-                            st.info("Run AI Research under the 'Tactical Research' tab to generate conviction picks.")
+                                st.info("Run AI Research under the 'Tactical Research' tab to generate conviction picks.")
 
 
     st.divider()
