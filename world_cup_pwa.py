@@ -3568,6 +3568,28 @@ def render_main_dashboard():
 </div>
 """, unsafe_allow_html=True)
 
+                    # AI Research Action Row outside of tabs
+                    res_data = st.session_state.conviction_picks.get(match_id)
+                    col_det, col_btn = st.columns([3, 2])
+                    with col_det:
+                        if res_data is not None:
+                            if isinstance(res_data, dict) and "error" in res_data:
+                                st.error("⚠️ AI Evaluation failed.")
+                            else:
+                                st.success("✅ AI Research Completed")
+                        else:
+                            st.info("💡 Research pending.")
+                    with col_btn:
+                        btn_label = "🔄 Rerun Research" if res_data is not None else "🔍 Run AI Research"
+                        if st.button(btn_label, key=f"outer_run_res_{match_id}", use_container_width=True):
+                            if not api_key:
+                                st.error("Please enter your Gemini API Key in the sidebar.")
+                            else:
+                                with st.spinner(f"Evaluating {match.home_team} vs {match.away_team}..."):
+                                    pick = evaluate_tactical_matchups_ai(match, api_key)
+                                    st.session_state.conviction_picks[match_id] = pick
+                                    st.rerun()
+
                     # Collapsible details expander
                     with st.expander("🔍 Match Details & Analysis", expanded=False):
                         # Create Tabs
@@ -3737,7 +3759,6 @@ def render_main_dashboard():
                                 st.table(df_display.set_index("Market"))
 
                         # Retrieve Conviction Picks if they exist
-                        res_data = st.session_state.conviction_picks.get(match_id)
                         picks = []
                         injuries = {}
                         key_battle = ""
@@ -3758,7 +3779,7 @@ def render_main_dashboard():
                         with tab_tactics:
                             if res_data is not None and isinstance(res_data, dict) and "error" in res_data:
                                 st.error(f"⚠️ AI Evaluation failed: {res_data['error']}")
-                                st.info("This is typically caused by a rate limit (429) on your free API Key. Please wait a minute and try Rerunning from the Match Sandbox in 'Match & Lineups' tab.")
+                                st.info("This is typically caused by a rate limit (429) on your free API Key. Please wait a minute and try Rerunning from the top row.")
                             elif res_data is not None:
                                 if key_battle:
                                     st.markdown(f"⚔️ **Key Battle:** {key_battle}")
@@ -3782,19 +3803,7 @@ def render_main_dashboard():
                                     else:
                                         st.caption("No major absences reported.")
                             else:
-                                st.info("Tactical Research context has not been fetched yet. Click below to run AI evaluation.")
-                                col1_btn, col2_btn = st.columns([1, 1])
-                                with col1_btn:
-                                    st.caption(f"Rosters: {len(match.home_lineup)} home / {len(match.away_lineup)} away")
-                                with col2_btn:
-                                    if st.button("🔍 Run AI Research", key=f"run_res_{match_id}", use_container_width=True):
-                                        if not api_key:
-                                            st.error("Please enter your Gemini API Key in the sidebar.")
-                                        else:
-                                            with st.spinner(f"Evaluating {match.home_team} vs {match.away_team}..."):
-                                                pick = evaluate_tactical_matchups_ai(match, api_key)
-                                                st.session_state.conviction_picks[match_id] = pick
-                                                st.rerun()
+                                st.info("Tactical Research context has not been fetched yet. Click the 'Run AI Research' button above to run AI evaluation.")
 
                         with tab_convictions:
                             if res_data is not None:
@@ -3804,7 +3813,7 @@ def render_main_dashboard():
                                 else:
                                     st.info("AI Research complete: No pending value recommendations (all logged/used or none found).")
                             else:
-                                st.info("Run AI Research under the 'Tactical Research' tab to generate conviction picks.")
+                                st.info("Run AI Research using the button above to generate conviction picks.")
 
 
     st.divider()
