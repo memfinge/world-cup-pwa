@@ -31,7 +31,8 @@ st.set_page_config(
 )
 
 # Inject Custom Glassmorphic Dark-Mode Stylesheet at script startup to keep it persistent
-st.markdown("""
+# Inject Custom Glassmorphic Dark-Mode Stylesheet at script startup to keep it persistent
+CUSTOM_CSS = """
 <style>
 /* Base Theme & Gradient Background */
 .stApp {
@@ -229,7 +230,8 @@ div[data-testid="stMetricValue"] {
     border: 1px solid rgba(100, 116, 139, 0.2);
 }
 </style>
-""", unsafe_allow_html=True)
+"""
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 # --- 2. ENUMS AND DATA MODELS (with Pydantic for validation) ---
 
@@ -3096,6 +3098,7 @@ def execute_sync_pipeline():
     """
     Main on-demand execution chain.
     """
+    st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
     with st.status("Executing sync pipeline...", expanded=True) as status:
         try:
             api_key = st.session_state.get("gemini_api_key") or os.environ.get("GEMINI_API_KEY")
