@@ -34,77 +34,77 @@ st.set_page_config(
 # Inject Custom Glassmorphic Dark-Mode Stylesheet at script startup to keep it persistent
 CUSTOM_CSS = """
 <style>
-/* 2026 World Cup Base Theme & Stadium Grass Background */
+/* 2026 World Cup Multi-Color Retro-Modern Theme */
 .stApp {
-    background: linear-gradient(135deg, #020504, #081d14, #040810) !important;
+    background: linear-gradient(135deg, #030611, #080d26, #02040b) !important;
     color: #e2e8f0 !important;
 }
 
-/* Glassmorphism Containers with Stadium Green Borders */
+/* Glassmorphic Cards with iconic World Cup Multi-Color Gradient Borders */
 div[data-testid="stExpander"], div[data-testid="element-container"] > div[style*="border"] {
-    background: rgba(11, 24, 18, 0.5) !important;
-    backdrop-filter: blur(12px) !important;
-    -webkit-backdrop-filter: blur(12px) !important;
-    border: 1px solid rgba(0, 255, 135, 0.08) !important;
-    border-radius: 12px !important;
-    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.35) !important;
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
-    margin-bottom: 12px !important;
+    background: rgba(10, 16, 37, 0.6) !important;
+    backdrop-filter: blur(14px) !important;
+    -webkit-backdrop-filter: blur(14px) !important;
+    border: 2px solid transparent !important;
+    border-image: linear-gradient(90deg, #00f2fe, #00ff87, #facc15, #ff5e62, #7c3aed) 1 !important;
+    border-radius: 0px !important; /* Flat retro styling fits the geometric look best */
+    box-shadow: 0 10px 35px 0 rgba(0, 0, 0, 0.4) !important;
+    transition: all 0.3s ease !important;
+    margin-bottom: 14px !important;
 }
 
-/* Interactive Card Hover Transition with Neon Turf Glow */
+/* Hover effect with vibrant radial glow */
 div[data-testid="stExpander"]:hover, div[data-testid="element-container"] > div[style*="border"]:hover {
-    border-color: rgba(0, 255, 135, 0.25) !important;
-    box-shadow: 0 12px 40px 0 rgba(0, 255, 135, 0.12) !important;
+    box-shadow: 0 15px 45px 0 rgba(99, 102, 241, 0.18) !important;
     transform: translateY(-2px) !important;
 }
 
-/* Typography Custom Fonts and Tri-Color Brand Gradients */
+/* Typography Custom Fonts and Multi-Color Brand Gradient */
 h1, h2, h3 {
     color: #ffffff !important;
     font-family: 'Outfit', 'Inter', sans-serif !important;
-    font-weight: 700 !important;
+    font-weight: 800 !important;
 }
 
 h1 {
-    background: linear-gradient(to right, #00ff87, #a855f7, #facc15) !important;
+    background: linear-gradient(to right, #00f2fe, #00ff87, #facc15, #ff5e62, #7c3aed) !important;
     -webkit-background-clip: text !important;
     -webkit-text-fill-color: transparent !important;
     padding-bottom: 0.2em !important;
-    font-size: 2.25rem !important;
+    font-size: 2.3rem !important;
 }
 
-/* 2026 Brand Buttons (Neon Green to Purple) */
+/* 2026 Brand Buttons (Vibrant Rainbow Shift) */
 button {
-    background: linear-gradient(90deg, #00ff87, #7c3aed) !important;
+    background: linear-gradient(90deg, #00f2fe, #00ff87, #facc15, #ff5e62, #7c3aed) !important;
     color: #030712 !important;
     border: none !important;
-    border-radius: 8px !important;
-    padding: 0.5rem 1.0rem !important;
-    font-weight: 700 !important;
-    box-shadow: 0 4px 14px 0 rgba(0, 255, 135, 0.25) !important;
-    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    border-radius: 0px !important; /* Geometric flat style */
+    padding: 0.55rem 1.1rem !important;
+    font-weight: 800 !important;
+    box-shadow: 0 4px 15px 0 rgba(0, 242, 254, 0.25) !important;
+    transition: all 0.25s ease-in-out !important;
 }
 
 button:hover {
-    background: linear-gradient(90deg, #05e67b, #6d28d9) !important;
+    background: linear-gradient(90deg, #7c3aed, #ff5e62, #facc15, #00ff87, #00f2fe) !important;
     color: #ffffff !important;
-    box-shadow: 0 6px 20px 0 rgba(124, 58, 237, 0.4) !important;
+    box-shadow: 0 6px 22px 0 rgba(124, 58, 237, 0.45) !important;
     transform: translateY(-1px) !important;
 }
 
 /* Form Controls & Inputs Styling */
 input, select, textarea {
-    background-color: rgba(6, 17, 13, 0.7) !important;
-    border: 1px solid rgba(0, 255, 135, 0.1) !important;
+    background-color: rgba(5, 8, 22, 0.8) !important;
+    border: 1px solid rgba(0, 242, 254, 0.25) !important;
     color: #f1f5f9 !important;
-    border-radius: 8px !important;
+    border-radius: 0px !important;
 }
 
-/* Metric Display Values (Neon Stadium Green) */
+/* Metric Display Values (Light Turquoise) */
 div[data-testid="stMetricValue"] {
     font-weight: 800 !important;
-    color: #00ff87 !important;
+    color: #00f2fe !important;
 }
 
 /* AI Confidence Meter */
@@ -117,13 +117,13 @@ div[data-testid="stMetricValue"] {
     align-items: center;
     margin-bottom: 6px;
     font-size: 0.8rem;
-    color: #94a3b8;
+    color: #a5b4fc;
     font-family: 'Outfit', 'Inter', sans-serif;
 }
 .confidence-meter-label span.score-val {
     font-size: 1.1rem;
     font-weight: 800;
-    color: #e2e8f0;
+    color: #ffffff;
 }
 .confidence-track {
     width: 100%;
@@ -141,33 +141,34 @@ div[data-testid="stMetricValue"] {
 
 /* Dashboard stat cards */
 .stat-card {
-    background: rgba(11, 24, 18, 0.6);
+    background: rgba(10, 16, 37, 0.65);
     backdrop-filter: blur(12px);
-    border: 1px solid rgba(0,255,135,0.08);
-    border-radius: 14px;
+    border: 2px solid transparent;
+    border-image: linear-gradient(90deg, #00f2fe, #7c3aed) 1;
+    border-radius: 0px;
     padding: 1rem 1.25rem;
     text-align: center;
     transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 .stat-card:hover {
     transform: translateY(-3px);
-    box-shadow: 0 10px 30px rgba(0,255,135,0.15);
+    box-shadow: 0 10px 30px rgba(0,242,254,0.2);
 }
 .stat-card .stat-value {
     font-size: 1.8rem;
     font-weight: 800;
-    color: #00ff87;
+    color: #00f2fe;
     font-family: 'Outfit', 'Inter', sans-serif;
 }
 .stat-card .stat-label {
     font-size: 0.72rem;
-    color: #8c9c96;
+    color: #94a3b8;
     text-transform: uppercase;
     letter-spacing: 0.08em;
     margin-top: 2px;
 }
 .stat-card .stat-delta-pos { color: #00ff87; font-size: 0.85rem; font-weight: 600; }
-.stat-card .stat-delta-neg { color: #f87171; font-size: 0.85rem; font-weight: 600; }
+.stat-card .stat-delta-neg { color: #ff5e62; font-size: 0.85rem; font-weight: 600; }
 .stat-card .stat-delta-neu { color: #94a3b8; font-size: 0.85rem; font-weight: 600; }
 
 /* Scoreboard Header */
@@ -176,7 +177,8 @@ div[data-testid="stMetricValue"] {
     justify-content: space-between;
     align-items: center;
     padding: 12px 10px;
-    border-bottom: 1px solid rgba(0, 255, 135, 0.08);
+    border-bottom: 2px solid transparent;
+    border-image: linear-gradient(to right, #00f2fe, #00ff87, #facc15, #ff5e62, #7c3aed) 1;
     margin-bottom: 14px;
 }
 .scoreboard-team {
@@ -189,25 +191,25 @@ div[data-testid="stMetricValue"] {
 .scoreboard-team.home {
     text-align: right;
     padding-right: 15px;
-    background: linear-gradient(to left, #ffffff, #00ff87);
+    background: linear-gradient(to left, #ffffff, #00f2fe);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
 }
 .scoreboard-team.away {
     text-align: left;
     padding-left: 15px;
-    background: linear-gradient(to right, #ffffff, #00ff87);
+    background: linear-gradient(to right, #ffffff, #00f2fe);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
 }
 .scoreboard-vs {
     font-size: 0.75rem;
     font-weight: 900;
-    background: linear-gradient(135deg, #00ff87, #7c3aed);
+    background: linear-gradient(135deg, #00f2fe, #7c3aed);
     color: #030712;
     padding: 3px 10px;
     border-radius: 20px;
-    box-shadow: 0 0 12px rgba(0, 255, 135, 0.35);
+    box-shadow: 0 0 12px rgba(0, 242, 254, 0.35);
     letter-spacing: 0.05em;
     text-transform: uppercase;
 }
@@ -218,23 +220,23 @@ div[data-testid="stMetricValue"] {
     padding: 3px 8px;
     font-size: 0.7rem;
     font-weight: 700;
-    border-radius: 6px;
+    border-radius: 4px;
     letter-spacing: 0.02em;
 }
 .badge-confirmed {
     background: rgba(0, 255, 135, 0.08);
     color: #00ff87;
-    border: 1px solid rgba(0, 255, 135, 0.15);
+    border: 1px solid rgba(0, 255, 135, 0.2);
 }
 .badge-projected {
     background: rgba(124, 58, 237, 0.08);
     color: #a78bfa;
-    border: 1px solid rgba(124, 58, 237, 0.15);
+    border: 1px solid rgba(124, 58, 237, 0.2);
 }
 .badge-none {
     background: rgba(100, 116, 139, 0.08);
     color: #94a3b8;
-    border: 1px solid rgba(100, 116, 139, 0.15);
+    border: 1px solid rgba(100, 116, 139, 0.2);
 }
 </style>
 """
