@@ -313,20 +313,16 @@ def generate_content_with_fallback(api_key: str, prompt: str, json_mode: bool = 
     """
     genai.configure(api_key=api_key)
     
-    # Prioritize 1.5 flash/pro models which usually have higher/stable quotas,
-    # then 1.5-flash-8b, then others. Put preview/experimental models last.
+    # Prioritize 2.5 flash / 2.0 flash models for speed and higher quotas,
+    # then fallback to 1.5 flash, 1.5 pro, and others.
     preferred_models = [
+        'gemini-2.5-flash',
+        'gemini-2.0-flash',
         'gemini-1.5-flash',
         'gemini-1.5-flash-8b',
+        'gemini-2.5-pro',
         'gemini-1.5-pro',
-        'gemini-1.5-flash-latest',
-        'gemini-1.5-pro-latest',
-        'gemini-2.0-flash-exp',
-        'gemini-2.5-flash',
-        'gemini-3.5-flash',
-        'gemini-3.5-pro',
-        'gemini-flash-latest',
-        'gemini-pro-latest'
+        'gemini-2.0-flash-exp'
     ]
     
     # Dynamically fetch other supported models from list_models
@@ -430,7 +426,7 @@ def scrape_confirmed_lineup(home_team: str, away_team: str) -> Optional[Dict[str
     for query in queries:
         try:
             from duckduckgo_search import DDGS
-            with DDGS() as ddgs:
+            with DDGS(timeout=3) as ddgs:
                 results = list(ddgs.text(query, max_results=5))
                 for r in results:
                     raw_text += f" {r.get('title', '')} {r.get('body', '')}"
@@ -1395,7 +1391,7 @@ def get_form_and_h2h_context(home_team: str, away_team: str) -> str:
         snippets = ""
         try:
             from duckduckgo_search import DDGS
-            with DDGS() as ddgs:
+            with DDGS(timeout=3) as ddgs:
                 results = list(ddgs.news(query, max_results=3))
                 if not results:
                     results = list(ddgs.text(query, max_results=3))
@@ -1448,7 +1444,7 @@ def try_grounded_generation(prompt: str, api_key: str) -> Optional[str]:
     Returns None on any failure so the caller can fall back to manual DDG search.
     """
     genai.configure(api_key=api_key)
-    grounding_models = ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-2.0-flash-exp']
+    grounding_models = ['gemini-2.5-flash', 'gemini-2.0-flash']
 
     for model_name in grounding_models:
         try:
@@ -1470,7 +1466,7 @@ def try_grounded_generation(prompt: str, api_key: str) -> Optional[str]:
             )
             response = model.generate_content(
                 prompt,
-                request_options={"timeout": 25}
+                request_options={"timeout": 12}
             )
             if response and response.text:
                 print(f"[DEBUG] Grounding succeeded with model: {model_name}")
@@ -2436,7 +2432,7 @@ def evaluate_tactical_matchups_ai(match: Match, api_key: str) -> Optional[Dict[s
         raw_research = ""
         try:
             from duckduckgo_search import DDGS
-            with DDGS() as ddgs:
+            with DDGS(timeout=3) as ddgs:
                 query = f"{match.home_team} vs {match.away_team} world cup 2026 team news injuries"
                 results = list(ddgs.news(query, max_results=5))
                 if not results:
