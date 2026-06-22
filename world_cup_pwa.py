@@ -180,24 +180,24 @@ div[data-testid="stMetricValue"] {
 }
 .scoreboard-team {
     flex: 1;
-    font-size: 1.35rem;
+    font-size: 1.25rem;
     font-weight: 700;
     font-family: 'Outfit', 'Inter', sans-serif;
-    color: #ffffff;
+    color: #ffffff !important;
+    border-radius: 6px;
+    height: 48px;
+    display: flex;
+    align-items: center;
 }
 .scoreboard-team.home {
+    justify-content: flex-end;
     text-align: right;
-    padding-right: 15px;
-    background: linear-gradient(to left, #ffffff, #00f2fe);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
+    padding-right: 18px;
 }
 .scoreboard-team.away {
+    justify-content: flex-start;
     text-align: left;
-    padding-left: 15px;
-    background: linear-gradient(to right, #ffffff, #00f2fe);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
+    padding-left: 18px;
 }
 .scoreboard-vs {
     font-size: 0.75rem;
@@ -796,6 +796,47 @@ WC_2026_VENUES: Dict[str, tuple] = {
     "guadalajara": ("Guadalajara, Mexico", 20.688, -103.467),
     "monterrey": ("Monterrey, Mexico", 25.669, -100.247),
 }
+
+
+_COUNTRY_CODES = {
+    "germany": "de",
+    "sweden": "se",
+    "netherlands": "nl",
+    "belgium": "be",
+    "spain": "es",
+    "ivorycoast": "ci",
+    "japan": "jp",
+    "saudiarabia": "sa",
+    "egypt": "eg",
+    "uruguay": "uy",
+    "argentina": "ar",
+    "france": "fr",
+    "norway": "no",
+    "senegal": "sn",
+    "jordan": "jo",
+    "algeria": "dz",
+    "iraq": "iq",
+    "newzealand": "nz",
+    "ecuador": "ec",
+    "usa": "us",
+    "unitedstates": "us",
+    "mexico": "mx",
+    "canada": "ca",
+    "brazil": "br",
+    "england": "gb-eng",
+    "portugal": "pt",
+    "morocco": "ma",
+    "croatia": "hr",
+    "italy": "it",
+}
+
+def get_country_code(team_name: str) -> Optional[str]:
+    clean_team = clean_name(team_name)
+    for k, v in _COUNTRY_CODES.items():
+        clean_k = clean_name(k)
+        if clean_k in clean_team or clean_team in clean_k:
+            return v
+    return None
 
 
 _FBREF_SQUAD_MAP = {
@@ -3441,11 +3482,23 @@ def render_main_dashboard():
                     else:
                         badge_html = '<span class="badge badge-none">⚪ NO LINEUP YET</span>'
                         
+                    # Resolve country codes for background watermark flags
+                    home_code = get_country_code(match.home_team)
+                    away_code = get_country_code(match.away_team)
+                    
+                    home_style = ""
+                    if home_code:
+                        home_style = f"background: linear-gradient(to right, rgba(15, 23, 42, 0.90), rgba(15, 23, 42, 0.65)), url('https://flagcdn.com/w160/{home_code}.png') no-repeat center; background-size: cover;"
+                        
+                    away_style = ""
+                    if away_code:
+                        away_style = f"background: linear-gradient(to left, rgba(15, 23, 42, 0.90), rgba(15, 23, 42, 0.65)), url('https://flagcdn.com/w160/{away_code}.png') no-repeat center; background-size: cover;"
+                        
                     st.markdown(f"""
 <div class="scoreboard">
-    <div class="scoreboard-team home">{match.home_team}</div>
+    <div class="scoreboard-team home" style="{home_style}">{match.home_team}</div>
     <div class="scoreboard-vs">VS</div>
-    <div class="scoreboard-team away">{match.away_team}</div>
+    <div class="scoreboard-team away" style="{away_style}">{match.away_team}</div>
 </div>
 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; margin-top:-4px;">
     <div style="font-size:0.78rem; color:#94a3b8;">📅 Kickoff: {_ct.strftime('%a %b %d, %I:%M %p')} {_ct_label}</div>
