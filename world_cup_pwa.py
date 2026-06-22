@@ -1426,7 +1426,7 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
         bypass = st.session_state.get("bypass_sync_cache", False)
         if not bypass:
             try:
-                existing_matches = supabase.table("matches").select("match_id, updated_at").filter("kickoff_time", "gte", f"{target_date_iso}T00:00:00+00:00").filter("kickoff_time", "lte", f"{target_date_iso}T23:59:59+00:00").execute()
+                existing_matches = supabase.table("matches").select("match_id, updated_at").filter("kickoff_time", "gte", f"{target_date_iso}T00:00:00-05:00").filter("kickoff_time", "lte", f"{target_date_iso}T23:59:59-05:00").execute()
                 if existing_matches.data:
                     newest_update = None
                     for m in existing_matches.data:
@@ -1963,7 +1963,7 @@ Guidelines:
             st.session_state['odds_trend_history'] = {}
 
         try:
-            matches_to_del = supabase.table("matches").select("match_id").filter("kickoff_time", "gte", f"{target_date_iso}T00:00:00+00:00").filter("kickoff_time", "lte", f"{target_date_iso}T23:59:59+00:00").execute()
+            matches_to_del = supabase.table("matches").select("match_id").filter("kickoff_time", "gte", f"{target_date_iso}T00:00:00-05:00").filter("kickoff_time", "lte", f"{target_date_iso}T23:59:59-05:00").execute()
             ids_to_del = [m['match_id'] for m in matches_to_del.data]
             if ids_to_del:
                 # Snapshot current odds BEFORE deleting (line movement baseline)
@@ -2907,8 +2907,7 @@ def execute_sync_pipeline():
             # Step 2b: Fetch lineups for TODAY's matches only
             today_matches = [
                 m for m in all_matches
-                if m.kickoff_time.date() == date.today()
-                or (m.kickoff_time.date() == date.today())
+                if to_central_time(m.kickoff_time)[0].date() == date.today()
             ]
             if today_matches and target_date == date.today():
                 status.update(label=f"Fetching lineups for {len(today_matches)} today's match(es)...")
@@ -3149,7 +3148,7 @@ def render_main_dashboard():
             st.session_state.conviction_picks = {}
             
         selected_date_str = target_date.strftime("%Y-%m-%d")
-        day_matches = [m for m in st.session_state.all_matches if m.kickoff_time.strftime("%Y-%m-%d") == selected_date_str]
+        day_matches = [m for m in st.session_state.all_matches if to_central_time(m.kickoff_time)[0].strftime("%Y-%m-%d") == selected_date_str]
         
         if not day_matches:
             st.warning(f"No matches found in the database for {target_date.strftime('%A, %b %d, %Y')}. Run the sync pipeline to discover games for this date.")
