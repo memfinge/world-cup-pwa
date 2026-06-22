@@ -53,12 +53,14 @@ div[data-testid="stExpander"] {
 }
 
 /* Outer Matchup Container with border-left branding accent and extra separation margin */
+div[data-testid="stVerticalBlockBorderWrapper"],
+div[data-testid="stVerticalBlockBorderWrapper"] > div,
 div[data-testid="element-container"] > div[style*="border"] {
     background: rgba(8, 12, 24, 0.88) !important;
     backdrop-filter: blur(12px) !important;
     -webkit-backdrop-filter: blur(12px) !important;
-    border: 2px solid rgba(255, 255, 255, 0.14) !important; /* Thickened and more visible slate/white border */
-    border-left: 5px solid #7c3aed !important; /* Pronounced Premium Purple branding strip */
+    border: 2.5px solid rgba(255, 255, 255, 0.20) !important; /* Thickened and highly visible slate/white border */
+    border-left: 6px solid #7c3aed !important; /* Pronounced Premium Purple branding strip */
     border-radius: 12px !important;
     box-shadow: 0 12px 42px 0 rgba(0, 0, 0, 0.75) !important;
     transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
@@ -67,8 +69,11 @@ div[data-testid="element-container"] > div[style*="border"] {
 }
 
 /* Hover effect with soft premium glow */
-div[data-testid="stExpander"]:hover, div[data-testid="element-container"] > div[style*="border"]:hover {
-    border-color: rgba(0, 242, 254, 0.45) !important;
+div[data-testid="stExpander"]:hover,
+div[data-testid="stVerticalBlockBorderWrapper"]:hover,
+div[data-testid="stVerticalBlockBorderWrapper"] > div:hover,
+div[data-testid="element-container"] > div[style*="border"]:hover {
+    border-color: rgba(0, 242, 254, 0.5) !important;
     box-shadow: 0 12px 40px 0 rgba(0, 242, 254, 0.08) !important;
     transform: translateY(-2px) !important;
 }
