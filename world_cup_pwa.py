@@ -733,6 +733,88 @@ WC_2026_VENUES: Dict[str, tuple] = {
 }
 
 
+_FBREF_SQUAD_MAP = {
+    "germany": "c1e260a9/Germany-Men-Stats",
+    "sweden": "4c23f20f/Sweden-Men-Stats",
+    "netherlands": "f666f289/Netherlands-Men-Stats",
+    "belgium": "361ca2ad/Belgium-Men-Stats",
+    "spain": "b561befe/Spain-Men-Stats",
+    "ivorycoast": "f2043e09/Ivory-Coast-Men-Stats",
+    "japan": "c85f3a22/Japan-Men-Stats",
+    "saudiarabia": "b26f5fcf/Saudi-Arabia-Men-Stats",
+    "egypt": "26e382d5/Egypt-Men-Stats",
+    "uruguay": "87ca1a50/Uruguay-Men-Stats",
+    "argentina": "f9f3c054/Argentina-Men-Stats",
+    "france": "370d0a8b/France-Men-Stats",
+    "norway": "80e922b0/Norway-Men-Stats",
+    "senegal": "22d5f2f5/Senegal-Men-Stats",
+    "jordan": "70df5cfa/Jordan-Men-Stats",
+    "algeria": "97c0f0df/Algeria-Men-Stats",
+    "iraq": "72dfdf2a/Iraq-Men-Stats",
+    "newzealand": "76f0c10f/New-Zealand-Men-Stats",
+    "ecuador": "2f8d488c/Ecuador-Men-Stats",
+}
+
+@st.cache_data(ttl=86400)
+def get_fbref_squad_stats(team_name: str) -> dict:
+    """
+    Scrapes the FBRef team stats page for advanced metrics (possession, xG, shots, etc.).
+    Cached for 24 hours to prevent rate limit blocks.
+    """
+    clean_team = clean_name(team_name)
+    squad_slug = _FBREF_SQUAD_MAP.get(clean_team)
+    if not squad_slug:
+        # Fallback: search clean name key
+        for k, v in _FBREF_SQUAD_MAP.items():
+            if k in clean_team or clean_team in k:
+                squad_slug = v
+                break
+                
+    if not squad_slug:
+        return {}
+
+    url = f"https://fbref.com/en/squads/{squad_slug}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    
+    try:
+        import re
+        resp = requests.get(url, headers=headers, timeout=12)
+        if resp.status_code != 200:
+            return {}
+            
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        stats = {}
+        
+        # 1. Parse standard stats (possession, goals, xG, etc.)
+        std_table = soup.find("table", id=re.compile(r"stats_standard"))
+        if std_table:
+            tfoot = std_table.find("tfoot")
+            if tfoot:
+                cols = tfoot.find_all("td")
+                for td in cols:
+                    stat_name = td.get("data-stat")
+                    if stat_name in ("goals", "assists", "xg", "xg_xgag_co", "pens_made"):
+                        stats[stat_name] = td.get_text().strip()
+                        
+        # 2. Parse shooting stats (shots, shots on target, etc.)
+        shoot_table = soup.find("table", id=re.compile(r"stats_shooting"))
+        if shoot_table:
+            tfoot = shoot_table.find("tfoot")
+            if tfoot:
+                cols = tfoot.find_all("td")
+                for td in cols:
+                    stat_name = td.get("data-stat")
+                    if stat_name in ("shots", "shots_on_target", "shots_on_target_pct", "shots_per90", "shots_on_target_per90"):
+                        stats[stat_name] = td.get_text().strip()
+
+        return stats
+    except Exception as e:
+        print(f"[DEBUG] Error scraping FBRef for {team_name}: {e}")
+        return {}
+
+
 def get_weather_context(venue_city: str, match_date: str) -> str:
     """
     Fetches match-day weather forecast from OpenMeteo (free, no API key required).
@@ -2275,6 +2357,18 @@ def evaluate_tactical_matchups_ai(match: Match, api_key: str) -> Optional[Dict[s
         else:
             print(f"[DEBUG] API-Football returned no data (key missing or teams not found).")
 
+        # --- 4c. FBRef advanced squad stats ---
+        print(f"[DEBUG] Fetching FBRef advanced squad stats for {match.home_team} vs {match.away_team}...")
+        fbref_home_stats = get_fbref_squad_stats(match.home_team)
+        fbref_away_stats = get_fbref_squad_stats(match.away_team)
+        fbref_context = f"""
+{match.home_team} FBRef Stats:
+{json.dumps(fbref_home_stats, indent=2) if fbref_home_stats else "No FBRef stats found or squad not mapped."}
+
+{match.away_team} FBRef Stats:
+{json.dumps(fbref_away_stats, indent=2) if fbref_away_stats else "No FBRef stats found or squad not mapped."}
+"""
+
         # --- 5. General match news (DDG/Yahoo) ---
         raw_research = ""
         try:
@@ -2355,6 +2449,12 @@ Do NOT override this data with assumptions from other sections.
 {api_football_context if api_football_context else 'API-Football data unavailable for this match (key not set or teams not found).'}
 
 ══════════════════════════════════════════
+[SECTION 3b: ADVANCED TEAM STATS — FBRef (xG, SHOTS)]
+══════════════════════════════════════════
+Use these verified squad-level metrics from FBRef (shots, shots on target, xG, xGA, etc.) to analyze tactical efficiency:
+{fbref_context}
+
+══════════════════════════════════════════
 [SECTION 4: SUPPLEMENTAL FORM, H2H & xG — WEB SEARCH SNIPPETS]
 ══════════════════════════════════════════
 Use these web search snippets to supplement Section 3 (e.g. for xG, pressing stats, referee data not available from API-Football).
@@ -2388,7 +2488,7 @@ ANALYSIS TASKS:
 6. Weather impact: If Section 5 shows adverse conditions (wind, rain), adjust corners/totals recommendations accordingly.
 7. Line movement: If any line moved sharper (Section 1), presume sharp action — consider fading public or following the sharp side.
 8. Referee tendency: If referee data suggests high card rates, note potential impact on bookings markets.
-9. Tactical style clash: Using Sections 3, 4, and your own knowledge, explicitly analyze the style matchup:
+9. Tactical style clash: Using Sections 3, 3b, 4, and your own knowledge, explicitly analyze the style matchup:
    - What formation/system does each team use?
    - Is one team a high-press side facing a slow-buildup team? A possession side facing a low-block?
    - Which team's style exploits the other's known weakness?
@@ -2464,7 +2564,7 @@ If no value exists anywhere, return `"recommendations": []`.
         raw_research_display = ""
         if grounding_used:
             raw_research_display = "[Google Search Grounding Active — AI searched the web in real-time]\n\n"
-        raw_research_display += f"[MATCH NEWS]\n{raw_research}\n\n[FORM / H2H / xG / REFEREE]\n{extended_research}\n\n[WEATHER]\n{weather_str}\n\n[LINE MOVEMENT]\n{line_movement_str or 'None detected'}"
+        raw_research_display += f"[MATCH NEWS]\n{raw_research}\n\n[FBRef ADVANCED STATS]\n{fbref_context}\n\n[FORM / H2H / xG / REFEREE]\n{extended_research}\n\n[WEATHER]\n{weather_str}\n\n[LINE MOVEMENT]\n{line_movement_str or 'None detected'}"
 
         # Print the raw content to your terminal for easy debugging
         print(f"\n--- [DEBUG] Gemini Raw Response for {match.match_id} (grounding={grounding_used}) ---")
@@ -3033,8 +3133,10 @@ def render_dashboard_tab():
 
     _card(col1, total, "Total Bets", f"{pending} Pending", delta_pos=True)
     _card(col2, f"{won}W / {lost}L", "Record", f"{win_rate:.1f}% Win Rate", delta_pos=(win_rate >= 50))
+    unit_val = st.session_state.get("unit_value", 10.0)
+    net_usd = net_pl * unit_val
     pl_delta_str = f"{net_pl:+.2f}u"
-    _card(col3, f"{net_pl:+.2f}u", "Net P&L", pl_delta_str, delta_pos=(net_pl >= 0))
+    _card(col3, f"${net_usd:+.2f}", "Net P&L (USD)", pl_delta_str, delta_pos=(net_pl >= 0))
     _card(col4, streak_label, "Current Streak")
 
     st.markdown("<br>", unsafe_allow_html=True)
@@ -3093,7 +3195,11 @@ def render_dashboard_tab():
     else:
         for e in recent:
             color = "green" if e["status"] == "Won" else "red"
+            unit_val = st.session_state.get("unit_value", 10.0)
+            usd_val = e['net_return'] * unit_val if e['net_return'] is not None else None
             ret_str = f"{e['net_return']:+.2f}u" if e["net_return"] is not None else "N/A"
+            if usd_val is not None:
+                ret_str += f" (${usd_val:+.2f})"
             mtype = e.get("market_type", "")
             sel = e.get("selection", "")
             if mtype == "SGP":
@@ -3168,6 +3274,17 @@ def render_main_dashboard():
             value=False,
             key="bypass_sync_cache",
             help="Check this to force the pipeline to fetch fresh odds and details from external APIs rather than using cached entries."
+        )
+
+        st.markdown("---")
+        st.subheader("Unit Customization")
+        st.number_input(
+            "Unit Value ($)",
+            min_value=0.01,
+            value=10.0,
+            step=1.0,
+            key="unit_value",
+            help="Define the dollar value of 1 Unit to track real cash returns."
         )
 
 
@@ -3488,8 +3605,12 @@ def render_main_dashboard():
                         st.caption(f"`{entry.market_type}` · Match: {entry.match_id}")
                     with col2:
                         st.markdown(f"**:{color}[{entry.status.upper()}]**")
-                        ret = f"{entry.net_return:+.2f}" if entry.net_return is not None else "N/A"
-                        st.metric("Net", f"{ret}u", delta_color="off")
+                        if entry.net_return is not None:
+                            unit_val = st.session_state.get("unit_value", 10.0)
+                            ret_usd = entry.net_return * unit_val
+                            st.metric("Net", f"${ret_usd:+.2f}", delta=f"{entry.net_return:+.2f}u", delta_color="normal")
+                        else:
+                            st.metric("Net", "N/A", delta_color="off")
 
                     # Manual override and delete controls
                     with st.expander("🛠️ Settle or Delete Bet", expanded=False):
