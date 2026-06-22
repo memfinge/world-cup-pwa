@@ -53,17 +53,21 @@ div[data-testid="stExpander"] {
 }
 
 /* Outer Matchup Container: Remove wrapper border, apply pronounced borders to inner block */
-div[data-testid="stVerticalBlockBorderWrapper"] {
+div[data-testid="stVerticalBlockBorderWrapper"],
+div.stVerticalBlockBorderWrapper {
     border: none !important;
     background: transparent !important;
     box-shadow: none !important;
     margin-bottom: 32px !important; /* Breathing room between match scorecards */
 }
-div[data-testid="stVerticalBlockBorderWrapper"] > div {
+div[data-testid="stVerticalBlockBorderWrapper"] > div,
+div.stVerticalBlockBorderWrapper > div,
+div[data-testid="column"] > div > div > div,
+div[data-testid="column"] > div > div > div > div {
     background: rgba(8, 12, 24, 0.92) !important;
     backdrop-filter: blur(12px) !important;
     -webkit-backdrop-filter: blur(12px) !important;
-    border: 3px solid rgba(255, 255, 255, 0.24) !important; /* Highly pronounced slate/white border */
+    border: 3.5px solid rgba(255, 255, 255, 0.28) !important; /* Extremely pronounced slate/white border */
     border-left: 8px solid #7c3aed !important; /* Extra thick brand purple accent strip */
     border-radius: 12px !important;
     box-shadow: 0 12px 42px 0 rgba(0, 0, 0, 0.75) !important;
@@ -73,9 +77,12 @@ div[data-testid="stVerticalBlockBorderWrapper"] > div {
 
 /* Hover effect with soft premium glow */
 div[data-testid="stExpander"]:hover,
-div[data-testid="stVerticalBlockBorderWrapper"] > div:hover {
-    border-color: rgba(0, 242, 254, 0.55) !important;
-    box-shadow: 0 12px 40px 0 rgba(0, 242, 254, 0.1) !important;
+div[data-testid="stVerticalBlockBorderWrapper"] > div:hover,
+div.stVerticalBlockBorderWrapper > div:hover,
+div[data-testid="column"] > div > div > div:hover,
+div[data-testid="column"] > div > div > div > div:hover {
+    border-color: rgba(0, 242, 254, 0.65) !important;
+    box-shadow: 0 12px 40px 0 rgba(0, 242, 254, 0.12) !important;
     transform: translateY(-2px) !important;
 }
 
