@@ -3769,98 +3769,98 @@ def render_main_dashboard():
     st.divider()
 
     # --- Ledger Display ---
-    st.subheader("Selection Ledger")
-    # Prop bet types that require manual settlement
-    _MANUAL_SETTLE_TYPES = {"Corners", "Anytime Goalscorer", "Player Shots", "Player Shots on Target", "Promo/Boost"}
-    try:
-        ledger_response = supabase.table("ledger").select("*").order("created_at", desc=True).limit(20).execute()
-        ledger_entries = [LedgerEntry.model_validate(e) for e in ledger_response.data]
+    with st.expander("📋 Selection Ledger", expanded=False):
+        # Prop bet types that require manual settlement
+        _MANUAL_SETTLE_TYPES = {"Corners", "Anytime Goalscorer", "Player Shots", "Player Shots on Target", "Promo/Boost"}
+        try:
+            ledger_response = supabase.table("ledger").select("*").order("created_at", desc=True).limit(20).execute()
+            ledger_entries = [LedgerEntry.model_validate(e) for e in ledger_response.data]
 
-        if not ledger_entries:
-            st.info("Ledger is empty.")
-        else:
-            has_pending_props = any(
-                e.status == LedgerStatus.PENDING and e.market_type in _MANUAL_SETTLE_TYPES
-                for e in ledger_entries
-            )
-            if has_pending_props:
-                st.caption(
-                    "⚠️ **Prop bets** (Corners, Anytime Goalscorer, Shots) cannot be auto-settled from the scoreline. "
-                    "Use the **Won / Lost / Void** buttons below to manually settle them. "
-                    "Running the sync pipeline will also automatically void any unsettled props once a final score is recorded."
+            if not ledger_entries:
+                st.info("Ledger is empty.")
+            else:
+                has_pending_props = any(
+                    e.status == LedgerStatus.PENDING and e.market_type in _MANUAL_SETTLE_TYPES
+                    for e in ledger_entries
                 )
+                if has_pending_props:
+                    st.caption(
+                        "⚠️ **Prop bets** (Corners, Anytime Goalscorer, Shots) cannot be auto-settled from the scoreline. "
+                        "Use the **Won / Lost / Void** buttons below to manually settle them. "
+                        "Running the sync pipeline will also automatically void any unsettled props once a final score is recorded."
+                    )
 
-            for entry in ledger_entries:
-                status_color = "#94a3b8"
-                if entry.status == LedgerStatus.WON: status_color = "#00ff87"
-                elif entry.status == LedgerStatus.LOST: status_color = "#ff5e62"
-                elif entry.status == LedgerStatus.VOID: status_color = "#ffaa00"
+                for entry in ledger_entries:
+                    status_color = "#94a3b8"
+                    if entry.status == LedgerStatus.WON: status_color = "#00ff87"
+                    elif entry.status == LedgerStatus.LOST: status_color = "#ff5e62"
+                    elif entry.status == LedgerStatus.VOID: status_color = "#ffaa00"
 
-                with st.container(border=True):
-                    col1, col2 = st.columns([3, 1])
-                    with col1:
-                        if entry.market_type == "SGP":
-                            try:
-                                parlay_data = json.loads(entry.selection)
-                                legs_desc = " + ".join([f"{leg['selection']} ({leg['base_odds']})" for leg in parlay_data.get("legs", [])])
-                                st.markdown(f"**SGP:** {legs_desc} ({entry.base_odds})")
-                            except Exception:
-                                st.markdown(f"**{entry.selection}** ({entry.base_odds})")
-                        else:
-                            st.markdown(f"**{entry.selection}** ({entry.base_odds})")
-                        st.caption(f"`{entry.market_type}` · Match: {entry.match_id}")
-                    with col2:
-                        st.markdown(f'<div style="font-size: 0.9rem; font-weight: 800; color: {status_color}; margin-bottom: 2px;">{entry.status.upper()}</div>', unsafe_allow_html=True)
-                        if entry.net_return is not None:
-                            unit_val = st.session_state.get("unit_value", 10.0)
-                            ret_usd = entry.net_return * unit_val
-                            st.markdown(f'<div style="font-size: 1.35rem; font-weight: 900; color: {status_color}; line-height: 1.25;">${ret_usd:+.2f}</div>', unsafe_allow_html=True)
-                            st.markdown(f'<div style="font-size: 0.8rem; font-weight: 600; color: {status_color}; opacity: 0.85;">{entry.net_return:+.2f}u</div>', unsafe_allow_html=True)
-                        else:
-                            st.markdown('<div style="font-size: 1.35rem; font-weight: 900; color: #94a3b8;">N/A</div>', unsafe_allow_html=True)
-
-                    # Manual override and delete controls
-                    with st.expander("🛠️ Settle or Delete Bet", expanded=False):
-                        mc1, mc2, mc3, mc4 = st.columns(4)
-                        slip_id = entry.slip_id
-                        base_odds = entry.base_odds
-                        unit_risk = entry.unit_risk
-
-                        def _manual_settle(sid=slip_id, outcome=LedgerStatus.WON, odds=base_odds, risk=unit_risk):
-                            if outcome == LedgerStatus.WON:
-                                if odds > 0:
-                                    nr = round(risk * (odds / 100.0), 2)
-                                else:
-                                    nr = round(risk * (100.0 / abs(odds)), 2)
-                            elif outcome == LedgerStatus.LOST:
-                                nr = round(-risk, 2)
+                    with st.container(border=True):
+                        col1, col2 = st.columns([3, 1])
+                        with col1:
+                            if entry.market_type == "SGP":
+                                try:
+                                    parlay_data = json.loads(entry.selection)
+                                    legs_desc = " + ".join([f"{leg['selection']} ({leg['base_odds']})" for leg in parlay_data.get("legs", [])])
+                                    st.markdown(f"**SGP:** {legs_desc} ({entry.base_odds})")
+                                except Exception:
+                                    st.markdown(f"**{entry.selection}** ({entry.base_odds})")
                             else:
-                                nr = 0.0
-                            supabase.table("ledger").update({
-                                "status": outcome.value,
-                                "net_return": nr
-                            }).eq("slip_id", sid).execute()
-                            st.rerun()
+                                st.markdown(f"**{entry.selection}** ({entry.base_odds})")
+                            st.caption(f"`{entry.market_type}` · Match: {entry.match_id}")
+                        with col2:
+                            st.markdown(f'<div style="font-size: 0.9rem; font-weight: 800; color: {status_color}; margin-bottom: 2px;">{entry.status.upper()}</div>', unsafe_allow_html=True)
+                            if entry.net_return is not None:
+                                unit_val = st.session_state.get("unit_value", 10.0)
+                                ret_usd = entry.net_return * unit_val
+                                st.markdown(f'<div style="font-size: 1.35rem; font-weight: 900; color: {status_color}; line-height: 1.25;">${ret_usd:+.2f}</div>', unsafe_allow_html=True)
+                                st.markdown(f'<div style="font-size: 0.8rem; font-weight: 600; color: {status_color}; opacity: 0.85;">{entry.net_return:+.2f}u</div>', unsafe_allow_html=True)
+                            else:
+                                st.markdown('<div style="font-size: 1.35rem; font-weight: 900; color: #94a3b8;">N/A</div>', unsafe_allow_html=True)
 
-                        def _delete_bet(sid=slip_id):
-                            supabase.table("ledger").delete().eq("slip_id", sid).execute()
-                            st.rerun()
+                        # Manual override and delete controls
+                        with st.expander("🛠️ Settle or Delete Bet", expanded=False):
+                            mc1, mc2, mc3, mc4 = st.columns(4)
+                            slip_id = entry.slip_id
+                            base_odds = entry.base_odds
+                            unit_risk = entry.unit_risk
 
-                        with mc1:
-                            if st.button("✅ Won", key=f"manual_won_{slip_id}", use_container_width=True):
-                                _manual_settle(sid=slip_id, outcome=LedgerStatus.WON, odds=base_odds, risk=unit_risk)
-                        with mc2:
-                            if st.button("❌ Lost", key=f"manual_lost_{slip_id}", use_container_width=True):
-                                _manual_settle(sid=slip_id, outcome=LedgerStatus.LOST, odds=base_odds, risk=unit_risk)
-                        with mc3:
-                            if st.button("↩️ Void", key=f"manual_void_{slip_id}", use_container_width=True):
-                                _manual_settle(sid=slip_id, outcome=LedgerStatus.VOID, odds=base_odds, risk=unit_risk)
-                        with mc4:
-                            if st.button("🗑️ Delete", key=f"manual_delete_{slip_id}", use_container_width=True):
-                                _delete_bet(sid=slip_id)
+                            def _manual_settle(sid=slip_id, outcome=LedgerStatus.WON, odds=base_odds, risk=unit_risk):
+                                if outcome == LedgerStatus.WON:
+                                    if odds > 0:
+                                        nr = round(risk * (odds / 100.0), 2)
+                                    else:
+                                        nr = round(risk * (100.0 / abs(odds)), 2)
+                                elif outcome == LedgerStatus.LOST:
+                                    nr = round(-risk, 2)
+                                else:
+                                    nr = 0.0
+                                supabase.table("ledger").update({
+                                    "status": outcome.value,
+                                    "net_return": nr
+                                }).eq("slip_id", sid).execute()
+                                st.rerun()
 
-    except Exception as e:
-        st.error(f"Could not load ledger: {e}")
+                            def _delete_bet(sid=slip_id):
+                                supabase.table("ledger").delete().eq("slip_id", sid).execute()
+                                st.rerun()
+
+                            with mc1:
+                                if st.button("✅ Won", key=f"manual_won_{slip_id}", use_container_width=True):
+                                    _manual_settle(sid=slip_id, outcome=LedgerStatus.WON, odds=base_odds, risk=unit_risk)
+                            with mc2:
+                                if st.button("❌ Lost", key=f"manual_lost_{slip_id}", use_container_width=True):
+                                    _manual_settle(sid=slip_id, outcome=LedgerStatus.LOST, odds=base_odds, risk=unit_risk)
+                            with mc3:
+                                if st.button("↩️ Void", key=f"manual_void_{slip_id}", use_container_width=True):
+                                    _manual_settle(sid=slip_id, outcome=LedgerStatus.VOID, odds=base_odds, risk=unit_risk)
+                            with mc4:
+                                if st.button("🗑️ Delete", key=f"manual_delete_{slip_id}", use_container_width=True):
+                                    _delete_bet(sid=slip_id)
+
+        except Exception as e:
+            st.error(f"Could not load ledger: {e}")
 
 
 def render_conviction_card(pick: Dict[str, Any]):
