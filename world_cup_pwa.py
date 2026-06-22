@@ -3052,73 +3052,269 @@ If no value exists anywhere, return `"recommendations": []`.
 
 def get_final_scores(api_key: str = "") -> Dict[str, str]:
     """
-    Scrapes Wikipedia for final scores of completed matches and maps them to database match_ids.
-    Returns a dictionary mapping match_id to a score string (e.g., "1-2").
+    Fetches final scores for completed World Cup matches.
+    Primary source: API-Football /fixtures?status=FT (structured, accurate).
+    Fallback: Wikipedia schedule scrape (less reliable, used only if API-Football key absent).
+    Returns a dict mapping match_id -> score string e.g. "2-1".
+    Also stores fixture_id -> match_id mapping in session state for prop resolution.
     """
+    af_key = os.environ.get("API_FOOTBALL_KEY", "")
+
+    # --- Primary: API-Football ---
+    if af_key:
+        try:
+            headers = {"x-apisports-key": af_key}
+            resp = requests.get(
+                f"{_AF_BASE}/fixtures",
+                headers=headers,
+                params={"league": _AF_WC_LEAGUE, "season": _AF_WC_SEASON, "status": "FT"},
+                timeout=12
+            )
+            if resp.status_code == 200:
+                fixtures = resp.json().get("response", [])
+                print(f"[AF] get_final_scores: {len(fixtures)} FT fixtures found.")
+
+                # Build match_id -> score map by fuzzy-matching against our DB
+                matches_resp = supabase.table("matches").select("match_id,home_team,away_team").execute()
+                db_matches = matches_resp.data
+
+                final_scores: Dict[str, str] = {}
+                fixture_id_map: Dict[str, int] = {}  # match_id -> af fixture_id
+
+                for fx in fixtures:
+                    af_home = fx["teams"]["home"]["name"].lower()
+                    af_away = fx["teams"]["away"]["name"].lower()
+                    hg = fx["goals"]["home"]
+                    ag = fx["goals"]["away"]
+                    if hg is None or ag is None:
+                        continue
+                    score_str = f"{hg}-{ag}"
+                    fx_id = fx["fixture"]["id"]
+
+                    # Fuzzy match against DB
+                    for dbm in db_matches:
+                        db_home = dbm["home_team"].lower()
+                        db_away = dbm["away_team"].lower()
+                        home_match = af_home in db_home or db_home in af_home
+                        away_match = af_away in db_away or db_away in af_away
+                        if home_match and away_match:
+                            final_scores[dbm["match_id"]] = score_str
+                            fixture_id_map[dbm["match_id"]] = fx_id
+                            break
+
+                # Persist fixture_id_map in session state for prop resolution lookups
+                st.session_state["af_fixture_id_map"] = fixture_id_map
+                if final_scores:
+                    return final_scores
+                # Fall through to Wikipedia fallback if no matches aligned
+        except Exception as e:
+            print(f"[DEBUG] API-Football final scores failed: {e}")
+
+    # --- Fallback: Wikipedia ---
     try:
-        # Fetch completed matches from Wikipedia
-        wiki_matches = get_wikipedia_matches()
-        if not wiki_matches:
-            return {}
-            
-        completed_wiki_matches = []
         import re
-        for m in wiki_matches:
-            # Check if score matches a digit-hyphen-digit pattern
-            if re.match(r'^\d+-\d+$', m["score"]):
-                completed_wiki_matches.append(m)
-                
-        if not completed_wiki_matches:
+        wiki_matches = get_wikipedia_matches()
+        completed = [m for m in wiki_matches if re.match(r'^\d+-\d+$', m.get("score", ""))]
+        if not completed:
             return {}
-            
-        # Fetch all matches from Supabase to map them
-        matches_resp = supabase.table("matches").select("match_id", "home_team", "away_team").execute()
+        matches_resp = supabase.table("matches").select("match_id,home_team,away_team").execute()
         db_matches = matches_resp.data
-        
         final_scores = {}
-        for m in completed_wiki_matches:
+        for m in completed:
             home = m["home_team"].lower()
             away = m["away_team"].lower()
-            # Find matching db match (fuzzy lookup in home/away teams)
-            db_match = next((dbm for dbm in db_matches if home in dbm["home_team"].lower() and away in dbm["away_team"].lower()), None)
+            db_match = next(
+                (dbm for dbm in db_matches
+                 if home in dbm["home_team"].lower() and away in dbm["away_team"].lower()),
+                None
+            )
             if db_match:
                 final_scores[db_match["match_id"]] = m["score"]
-                
         return final_scores
     except Exception as e:
-        print(f"[DEBUG] Error getting final scores: {e}")
+        print(f"[DEBUG] Wikipedia fallback for final scores failed: {e}")
         return {}
 
-def resolve_prop_with_ai(slip: LedgerEntry, match: Match, api_key: str) -> LedgerStatus:
+
+def get_af_fixture_stats(match_id: str) -> Dict[str, Any]:
     """
-    Uses Google Search Grounding (Gemini) to determine the outcome of a player prop or corner bet
-    based on actual web search results for the completed match.
+    Fetches structured per-player events and team statistics from API-Football
+    for a completed fixture identified by match_id.
+    Used to ground prop settlement with real stats instead of AI guesswork.
+    Returns a dict with keys: 'events', 'statistics', 'players'.
+    """
+    af_key = os.environ.get("API_FOOTBALL_KEY", "")
+    if not af_key:
+        return {}
+
+    # Look up the API-Football fixture ID from session state
+    fixture_id_map = st.session_state.get("af_fixture_id_map", {})
+    fx_id = fixture_id_map.get(match_id)
+    if not fx_id:
+        print(f"[DEBUG] get_af_fixture_stats: no fixture_id for match_id={match_id}")
+        return {}
+
+    headers = {"x-apisports-key": af_key}
+    result: Dict[str, Any] = {}
+
+    # 1. Fixture events (goals, cards, subs)
+    try:
+        ev_resp = requests.get(
+            f"{_AF_BASE}/fixtures/events",
+            headers=headers,
+            params={"fixture": fx_id},
+            timeout=10
+        )
+        if ev_resp.status_code == 200:
+            result["events"] = ev_resp.json().get("response", [])
+            print(f"[AF] fixture/events: {len(result['events'])} events for fixture {fx_id}")
+    except Exception as e:
+        print(f"[DEBUG] AF fixture/events failed: {e}")
+
+    # 2. Team statistics (shots, corners, cards totals per team)
+    try:
+        st_resp = requests.get(
+            f"{_AF_BASE}/fixtures/statistics",
+            headers=headers,
+            params={"fixture": fx_id},
+            timeout=10
+        )
+        if st_resp.status_code == 200:
+            result["statistics"] = st_resp.json().get("response", [])
+            print(f"[AF] fixture/statistics: {len(result['statistics'])} team stat blocks for fixture {fx_id}")
+    except Exception as e:
+        print(f"[DEBUG] AF fixture/statistics failed: {e}")
+
+    # 3. Per-player match stats (shots, saves, tackles, passes, cards)
+    try:
+        pl_resp = requests.get(
+            f"{_AF_BASE}/fixtures/players",
+            headers=headers,
+            params={"fixture": fx_id},
+            timeout=10
+        )
+        if pl_resp.status_code == 200:
+            result["players"] = pl_resp.json().get("response", [])
+            print(f"[AF] fixture/players: {len(result['players'])} player stat blocks for fixture {fx_id}")
+    except Exception as e:
+        print(f"[DEBUG] AF fixture/players failed: {e}")
+
+    return result
+
+
+def _format_af_stats_for_settlement(stats: Dict[str, Any], match: "Match") -> str:
+    """
+    Formats API-Football fixture stats into a readable string to inject into the
+    settlement AI prompt, providing concrete grounding for prop resolution.
+    """
+    lines = []
+
+    # Team statistics block (shots, corners, cards)
+    if stats.get("statistics"):
+        lines.append("=== OFFICIAL MATCH STATISTICS (API-Football) ===")
+        for team_block in stats["statistics"]:
+            tname = team_block.get("team", {}).get("name", "?")
+            lines.append(f"\n{tname}:")
+            for stat in team_block.get("statistics", []):
+                stype = stat.get("type", "")
+                sval = stat.get("value", "N/A")
+                lines.append(f"  {stype}: {sval}")
+
+    # Events (goals, cards, subs)
+    if stats.get("events"):
+        lines.append("\n=== MATCH EVENTS (Goals, Cards, Subs) ===")
+        for ev in stats["events"]:
+            minute = ev.get("time", {}).get("elapsed", "?")
+            team = ev.get("team", {}).get("name", "?")
+            player = ev.get("player", {}).get("name", "?")
+            etype = ev.get("type", "?")
+            detail = ev.get("detail", "")
+            lines.append(f"  {minute}' [{team}] {player} — {etype} ({detail})")
+
+    # Per-player stats
+    if stats.get("players"):
+        lines.append("\n=== PER-PLAYER MATCH STATISTICS ===")
+        lines.append(f"  {'Player':<22} {'Team':<20} {'Min':>4} {'G':>3} {'A':>3} {'Sh':>4} {'SoT':>4} {'Sv':>4} {'Tk':>4} {'YC':>3} {'RC':>3}")
+        lines.append(f"  {'-'*80}")
+        for team_block in stats["players"]:
+            tname = team_block.get("team", {}).get("name", "?")[:20]
+            for entry in team_block.get("players", []):
+                p = entry.get("player", {})
+                s = entry.get("statistics", [{}])[0] if entry.get("statistics") else {}
+                name = p.get("name", "?")[:22]
+                mins = s.get("games", {}).get("minutes") or 0
+                goals = s.get("goals", {}).get("total") or 0
+                assists = s.get("goals", {}).get("assists") or 0
+                shots = s.get("shots", {}).get("total") or 0
+                sot = s.get("shots", {}).get("on") or 0
+                saves = s.get("goals", {}).get("saves") or 0
+                tackles = s.get("tackles", {}).get("total") or 0
+                yc = s.get("cards", {}).get("yellow") or 0
+                rc = s.get("cards", {}).get("red") or 0
+                lines.append(f"  {name:<22} {tname:<20} {mins:>4} {goals:>3} {assists:>3} {shots:>4} {sot:>4} {saves:>4} {tackles:>4} {yc:>3} {rc:>3}")
+        lines.append("  (Cols: Min=minutes, G=goals, A=assists, Sh=shots, SoT=shots on target, Sv=saves, Tk=tackles, YC=yellow cards, RC=red cards)")
+
+    return "\n".join(lines) if lines else ""
+
+def resolve_prop_with_ai(slip: LedgerEntry, match: "Match", api_key: str) -> LedgerStatus:
+    """
+    Resolves a player prop or stat-based bet for a completed match.
+    Strategy:
+      1. Fetch structured API-Football fixture stats (goals, shots, corners, cards per player).
+      2. Inject those stats as grounded context into the Gemini prompt.
+      3. If AF stats are available, Gemini can resolve deterministically from real data.
+      4. If AF stats unavailable, fall back to Gemini Grounded Search.
     """
     if not api_key:
         return LedgerStatus.VOID
 
-    prompt = f"""
-Analyze the final official statistics for the World Cup 2026 match: {match.home_team} vs {match.away_team} which kicked off on {match.kickoff_time.strftime("%A, %B %d, %Y")}.
+    # --- Step 1: Fetch structured API-Football stats for this fixture ---
+    af_stats = get_af_fixture_stats(match.match_id)
+    af_context = _format_af_stats_for_settlement(af_stats, match) if af_stats else ""
 
-You need to verify the outcome of this specific betting selection:
+    if af_context:
+        print(f"[DEBUG] resolve_prop_with_ai: Using API-Football structured stats for {match.match_id}")
+        data_source_note = "Use the official API-Football statistics provided below as your PRIMARY source. Do NOT estimate."
+    else:
+        print(f"[DEBUG] resolve_prop_with_ai: No AF stats — falling back to Gemini grounded search for {match.match_id}")
+        data_source_note = "Search the web for the official verified statistics for this match."
+
+    prompt = f"""You are settling a sports bet for the completed World Cup 2026 match:
+{match.home_team} vs {match.away_team} — {match.kickoff_time.strftime('%A, %B %d, %Y')}
+
+Bet to settle:
 - Market Type: {slip.market_type}
 - Selection: {slip.selection}
 
-Perform a web search if necessary to find the official, verified stats. 
-Answer whether this bet WON, LOST, or if it should be VOID (e.g. if the player did not play/start).
+{data_source_note}
 
-Format your output strictly as a JSON object matching this schema:
+{af_context if af_context else ''}
+
+Based on the statistics above, determine if this bet WON, LOST, or should be VOID.
+A bet is VOID only if the player did not start or play in the match.
+
+For Over/Under props (e.g. "Mbappe Over 1.5 Shots on Target"):
+- Find the player's actual stat value in the per-player table above.
+- Compare it to the threshold in the selection string.
+- Output WON or LOST accordingly.
+
+For goalscorer props: check the Events section for Goal events.
+For card props: check the Events section for Card events and the per-player YC/RC columns.
+For corner props: check the Team Statistics for 'Corner Kicks'.
+For saves props: check the per-player Sv column.
+For tackles props: check the per-player Tk column.
+
+Format your output strictly as JSON:
 {{
   "outcome": "Won|Lost|Void",
-  "stat_value": "numeric value or description of the stat found (e.g. 'Alexander Isak had 3 shots on target' or 'There were 11 corners')",
-  "source": "Name of the source or website where the stat was verified"
+  "stat_value": "The actual stat value found (e.g. '2 shots on target', '11 corners', 'scored in 34th minute')",
+  "source": "API-Football structured data" or "web search"
 }}
 """
     try:
-        import json
         grounded_result = try_grounded_generation(prompt, api_key)
         content = grounded_result if grounded_result else generate_content_with_fallback(api_key, prompt, json_mode=True)
-        
+
         try:
             data = json.loads(content)
         except json.JSONDecodeError:
@@ -3127,10 +3323,10 @@ Format your output strictly as a JSON object matching this schema:
             elif "```" in content:
                 content = content.split("```")[1].split("```")[0].strip()
             data = json.loads(content)
-            
+
         outcome_str = data.get("outcome", "Void").strip().lower()
-        print(f"[DEBUG] AI Resolved Prop '{slip.selection}' ({slip.market_type}) for {match.match_id}: {outcome_str.upper()} (Value: {data.get('stat_value')}, Source: {data.get('source')})")
-        
+        print(f"[DEBUG] Prop settled: '{slip.selection}' ({slip.market_type}) → {outcome_str.upper()} | stat={data.get('stat_value')} | source={data.get('source')}")
+
         if outcome_str == "won":
             return LedgerStatus.WON
         elif outcome_str == "lost":
@@ -3138,7 +3334,7 @@ Format your output strictly as a JSON object matching this schema:
         else:
             return LedgerStatus.VOID
     except Exception as e:
-        print(f"[DEBUG] Error resolving prop with AI: {e}")
+        print(f"[DEBUG] Error in resolve_prop_with_ai: {e}")
         return LedgerStatus.VOID
 
 
