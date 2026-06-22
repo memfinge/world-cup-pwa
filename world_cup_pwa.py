@@ -167,6 +167,67 @@ div[data-testid="stMetricValue"] {
 .stat-card .stat-delta-pos { color: #4ade80; font-size: 0.85rem; font-weight: 600; }
 .stat-card .stat-delta-neg { color: #f87171; font-size: 0.85rem; font-weight: 600; }
 .stat-card .stat-delta-neu { color: #94a3b8; font-size: 0.85rem; font-weight: 600; }
+
+/* Scoreboard Header */
+.scoreboard {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 10px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    margin-bottom: 14px;
+}
+.scoreboard-team {
+    flex: 1;
+    font-size: 1.35rem;
+    font-weight: 700;
+    font-family: 'Outfit', 'Inter', sans-serif;
+    color: #ffffff;
+}
+.scoreboard-team.home {
+    text-align: right;
+    padding-right: 15px;
+}
+.scoreboard-team.away {
+    text-align: left;
+    padding-left: 15px;
+}
+.scoreboard-vs {
+    font-size: 0.75rem;
+    font-weight: 900;
+    background: linear-gradient(135deg, #4f46e5, #7c3aed);
+    color: #ffffff;
+    padding: 3px 10px;
+    border-radius: 20px;
+    box-shadow: 0 0 12px rgba(99, 102, 241, 0.35);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+/* Custom Badges */
+.badge {
+    display: inline-block;
+    padding: 3px 8px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    border-radius: 6px;
+    letter-spacing: 0.02em;
+}
+.badge-confirmed {
+    background: rgba(16, 185, 129, 0.12);
+    color: #34d399;
+    border: 1px solid rgba(16, 185, 129, 0.2);
+}
+.badge-projected {
+    background: rgba(59, 130, 246, 0.12);
+    color: #60a5fa;
+    border: 1px solid rgba(59, 130, 246, 0.2);
+}
+.badge-none {
+    background: rgba(100, 116, 139, 0.12);
+    color: #94a3b8;
+    border: 1px solid rgba(100, 116, 139, 0.2);
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -3351,16 +3412,26 @@ def render_main_dashboard():
                 
                 # Wrap each match card in a clean container
                 with st.container(border=True):
-                    st.markdown(f"⚽ **{match.home_team} vs {match.away_team}**")
                     _ct, _ct_label = to_central_time(match.kickoff_time)
-                    # Lineup source badge
+                    
                     if match.lineup_status == LineupStatus.CONFIRMED and len(match.home_lineup) >= 11:
-                        _lineup_badge = "🟢 Confirmed Lineup"
+                        badge_html = '<span class="badge badge-confirmed">🟢 CONFIRMED LINEUP</span>'
                     elif match.home_lineup:
-                        _lineup_badge = "🔵 AI Projected Lineup"
+                        badge_html = '<span class="badge badge-projected">🔵 AI PROJECTED LINEUP</span>'
                     else:
-                        _lineup_badge = "⚪ No Lineup Yet"
-                    st.caption(f"Kickoff: {_ct.strftime('%a %b %d, %I:%M %p')} {_ct_label} | {_lineup_badge}")
+                        badge_html = '<span class="badge badge-none">⚪ NO LINEUP YET</span>'
+                        
+                    st.markdown(f"""
+<div class="scoreboard">
+    <div class="scoreboard-team home">{match.home_team}</div>
+    <div class="scoreboard-vs">VS</div>
+    <div class="scoreboard-team away">{match.away_team}</div>
+</div>
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; margin-top:-4px;">
+    <div style="font-size:0.78rem; color:#94a3b8;">📅 Kickoff: {_ct.strftime('%a %b %d, %I:%M %p')} {_ct_label}</div>
+    <div>{badge_html}</div>
+</div>
+""", unsafe_allow_html=True)
 
                     # Collapsible Sandbox editor for tactical lineups and odds
                     with st.expander("🛠️ Match Sandbox (Roster & Odds Editor)", expanded=False):
