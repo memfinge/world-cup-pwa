@@ -874,6 +874,7 @@ def get_fbref_squad_stats(team_name: str) -> dict:
         return {}
 
 
+@st.cache_data(ttl=7200)
 def get_weather_context(venue_city: str, match_date: str) -> str:
     """
     Fetches match-day weather forecast from OpenMeteo (free, no API key required).
@@ -1371,6 +1372,7 @@ def get_api_football_context(home_team: str, away_team: str) -> str:
     return "\n".join(sections)
 
 
+@st.cache_data(ttl=7200)
 def get_form_and_h2h_context(home_team: str, away_team: str) -> str:
     """
     Runs targeted searches for team recent form, H2H history, xG/stats, and referee data.
@@ -1435,6 +1437,44 @@ def get_form_and_h2h_context(home_team: str, away_team: str) -> str:
             full_context += f"\n[{label}]\n{snippets}"
 
     return full_context.strip()
+
+
+@st.cache_data(ttl=7200)
+def get_general_news_context(home_team: str, away_team: str) -> str:
+    """
+    Fetches general team news and injury intel for the match, with a 2-hour cache.
+    """
+    raw_research = ""
+    try:
+        from duckduckgo_search import DDGS
+        with DDGS(timeout=3) as ddgs:
+            query = f"{home_team} vs {away_team} world cup 2026 team news injuries"
+            results = list(ddgs.news(query, max_results=5))
+            if not results:
+                results = list(ddgs.news(f"{home_team} vs {away_team} football", max_results=5))
+            for r in results:
+                raw_research += f"  • {r.get('title')}: {r.get('body', '')}\n"
+    except Exception as ddg_err:
+        print(f"[DEBUG] DDG news failed: {ddg_err}")
+
+    # Fallback to Yahoo News
+    if len(raw_research.strip()) < 50:
+        try:
+            query = f"{home_team} vs {away_team} world cup 2026 team news"
+            url = f"https://news.search.yahoo.com/search?p={urllib.parse.quote(query)}"
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+            resp = requests.get(url, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, 'html.parser')
+                for item in soup.find_all("div", class_="NewsArticle")[:5]:
+                    title_tag = item.find("h4") or item.find("a")
+                    snippet_tag = item.find("p") or item.find(class_="compText")
+                    if title_tag:
+                        raw_research += f"  • {title_tag.get_text().strip()}: {snippet_tag.get_text().strip() if snippet_tag else ''}\n"
+        except Exception as yahoo_err:
+            print(f"[DEBUG] Yahoo News fallback failed: {yahoo_err}")
+
+    return raw_research
 
 
 def try_grounded_generation(prompt: str, api_key: str) -> Optional[str]:
@@ -2429,35 +2469,8 @@ def evaluate_tactical_matchups_ai(match: Match, api_key: str) -> Optional[Dict[s
 """
 
         # --- 5. General match news (DDG/Yahoo) ---
-        raw_research = ""
-        try:
-            from duckduckgo_search import DDGS
-            with DDGS(timeout=3) as ddgs:
-                query = f"{match.home_team} vs {match.away_team} world cup 2026 team news injuries"
-                results = list(ddgs.news(query, max_results=5))
-                if not results:
-                    results = list(ddgs.news(f"{match.home_team} vs {match.away_team} football", max_results=5))
-                for r in results:
-                    raw_research += f"  • {r.get('title')}: {r.get('body', '')}\n"
-        except Exception as ddg_err:
-            print(f"[DEBUG] DDG news failed: {ddg_err}")
-
-        # Fallback to Yahoo News
-        if len(raw_research.strip()) < 50:
-            try:
-                query = f"{match.home_team} vs {match.away_team} world cup 2026 team news"
-                url = f"https://news.search.yahoo.com/search?p={urllib.parse.quote(query)}"
-                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-                resp = requests.get(url, headers=headers, timeout=10)
-                if resp.status_code == 200:
-                    soup = BeautifulSoup(resp.text, 'html.parser')
-                    for item in soup.find_all("div", class_="NewsArticle")[:5]:
-                        title_tag = item.find("h4") or item.find("a")
-                        snippet_tag = item.find("p") or item.find(class_="compText")
-                        if title_tag:
-                            raw_research += f"  • {title_tag.get_text().strip()}: {snippet_tag.get_text().strip() if snippet_tag else ''}\n"
-            except Exception as yahoo_err:
-                print(f"[DEBUG] Yahoo News fallback failed: {yahoo_err}")
+        print(f"[DEBUG] Fetching general match news for {match.home_team} vs {match.away_team}...")
+        raw_research = get_general_news_context(match.home_team, match.away_team)
 
         # Compress news & research before sending to AI
         compressed_news = compress_and_structure_news(raw_research)
