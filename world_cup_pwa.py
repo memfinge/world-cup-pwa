@@ -52,29 +52,30 @@ div[data-testid="stExpander"] {
     margin-bottom: 12px !important;
 }
 
-/* Outer Matchup Container with border-left branding accent and extra separation margin */
-div[data-testid="stVerticalBlockBorderWrapper"],
-div[data-testid="stVerticalBlockBorderWrapper"] > div,
-div[data-testid="element-container"] > div[style*="border"] {
-    background: rgba(8, 12, 24, 0.88) !important;
+/* Outer Matchup Container: Remove wrapper border, apply pronounced borders to inner block */
+div[data-testid="stVerticalBlockBorderWrapper"] {
+    border: none !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    margin-bottom: 32px !important; /* Breathing room between match scorecards */
+}
+div[data-testid="stVerticalBlockBorderWrapper"] > div {
+    background: rgba(8, 12, 24, 0.92) !important;
     backdrop-filter: blur(12px) !important;
     -webkit-backdrop-filter: blur(12px) !important;
-    border: 2.5px solid rgba(255, 255, 255, 0.20) !important; /* Thickened and highly visible slate/white border */
-    border-left: 6px solid #7c3aed !important; /* Pronounced Premium Purple branding strip */
+    border: 3px solid rgba(255, 255, 255, 0.24) !important; /* Highly pronounced slate/white border */
+    border-left: 8px solid #7c3aed !important; /* Extra thick brand purple accent strip */
     border-radius: 12px !important;
     box-shadow: 0 12px 42px 0 rgba(0, 0, 0, 0.75) !important;
     transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
-    margin-bottom: 32px !important; /* More breathing room between match scorecards */
     padding: 16px !important;
 }
 
 /* Hover effect with soft premium glow */
 div[data-testid="stExpander"]:hover,
-div[data-testid="stVerticalBlockBorderWrapper"]:hover,
-div[data-testid="stVerticalBlockBorderWrapper"] > div:hover,
-div[data-testid="element-container"] > div[style*="border"]:hover {
-    border-color: rgba(0, 242, 254, 0.5) !important;
-    box-shadow: 0 12px 40px 0 rgba(0, 242, 254, 0.08) !important;
+div[data-testid="stVerticalBlockBorderWrapper"] > div:hover {
+    border-color: rgba(0, 242, 254, 0.55) !important;
+    box-shadow: 0 12px 40px 0 rgba(0, 242, 254, 0.1) !important;
     transform: translateY(-2px) !important;
 }
 
