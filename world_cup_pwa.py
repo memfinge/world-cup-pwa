@@ -40,8 +40,8 @@ CUSTOM_CSS = """
     color: #cbd5e1 !important;
 }
 
-/* Glassmorphic Cards with Deeper Slate backgrounds and subtle borders */
-div[data-testid="stExpander"], div[data-testid="element-container"] > div[style*="border"] {
+/* Glassmorphic Details Expander */
+div[data-testid="stExpander"] {
     background: rgba(6, 10, 20, 0.82) !important;
     backdrop-filter: blur(12px) !important;
     -webkit-backdrop-filter: blur(12px) !important;
@@ -50,6 +50,20 @@ div[data-testid="stExpander"], div[data-testid="element-container"] > div[style*
     box-shadow: 0 8px 36px 0 rgba(0, 0, 0, 0.5) !important;
     transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
     margin-bottom: 12px !important;
+}
+
+/* Outer Matchup Container with border-left branding accent and extra separation margin */
+div[data-testid="element-container"] > div[style*="border"] {
+    background: rgba(8, 12, 24, 0.88) !important;
+    backdrop-filter: blur(12px) !important;
+    -webkit-backdrop-filter: blur(12px) !important;
+    border: 1px solid rgba(255, 255, 255, 0.04) !important;
+    border-left: 3px solid #7c3aed !important; /* Premium Purple branding strip */
+    border-radius: 12px !important;
+    box-shadow: 0 12px 42px 0 rgba(0, 0, 0, 0.75) !important;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    margin-bottom: 32px !important; /* More breathing room between match scorecards */
+    padding: 16px !important;
 }
 
 /* Hover effect with soft premium glow */
@@ -227,19 +241,29 @@ div[data-testid="stMetricValue"] {
     letter-spacing: 0.02em;
 }
 .badge-confirmed {
-    background: rgba(0, 255, 135, 0.05);
-    color: #00ff87;
-    border: 1px solid rgba(0, 255, 135, 0.1);
+    background: rgba(0, 255, 135, 0.05) !important;
+    color: #00ff87 !important;
+    border: 1px solid rgba(0, 255, 135, 0.1) !important;
 }
 .badge-projected {
-    background: rgba(124, 58, 237, 0.05);
-    color: #a78bfa;
-    border: 1px solid rgba(124, 58, 237, 0.1);
+    background: rgba(124, 58, 237, 0.05) !important;
+    color: #a78bfa !important;
+    border: 1px solid rgba(124, 58, 237, 0.1) !important;
 }
 .badge-none {
-    background: rgba(100, 116, 139, 0.05);
-    color: #94a3b8;
-    border: 1px solid rgba(100, 116, 139, 0.1);
+    background: rgba(100, 116, 139, 0.05) !important;
+    color: #94a3b8 !important;
+    border: 1px solid rgba(100, 116, 139, 0.1) !important;
+}
+.badge-research-done {
+    background: rgba(0, 242, 254, 0.05) !important;
+    color: #00f2fe !important;
+    border: 1px solid rgba(0, 242, 254, 0.1) !important;
+}
+.badge-research-pending {
+    background: rgba(245, 158, 11, 0.05) !important;
+    color: #f59e0b !important;
+    border: 1px solid rgba(245, 158, 11, 0.1) !important;
 }
 </style>
 """
@@ -3544,6 +3568,16 @@ def render_main_dashboard():
                         badge_html = '<span class="badge badge-projected">🔵 AI PROJECTED LINEUP</span>'
                     else:
                         badge_html = '<span class="badge badge-none">⚪ NO LINEUP YET</span>'
+
+                    # Clean AI Research status badge
+                    res_data = st.session_state.conviction_picks.get(match_id)
+                    if res_data is not None:
+                        if isinstance(res_data, dict) and "error" in res_data:
+                            research_badge_html = '<span class="badge badge-research-pending">⚠️ FAILED</span>'
+                        else:
+                            research_badge_html = '<span class="badge badge-research-done">🧠 RESEARCH DONE</span>'
+                    else:
+                        research_badge_html = '<span class="badge badge-research-pending">⚪ PENDING</span>'
                         
                     # Resolve country codes for background watermark flags
                     home_code = get_country_code(match.home_team)
@@ -3565,31 +3599,23 @@ def render_main_dashboard():
 </div>
 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; margin-top:-4px;">
     <div style="font-size:0.78rem; color:#94a3b8;">📅 Kickoff: {_ct.strftime('%a %b %d, %I:%M %p')} {_ct_label}</div>
-    <div>{badge_html}</div>
+    <div style="display: flex; gap: 8px; align-items: center;">
+        {badge_html}
+        {research_badge_html}
+    </div>
 </div>
 """, unsafe_allow_html=True)
 
-                    # AI Research Action Row outside of tabs
-                    res_data = st.session_state.conviction_picks.get(match_id)
-                    col_det, col_btn = st.columns([3, 2])
-                    with col_det:
-                        if res_data is not None:
-                            if isinstance(res_data, dict) and "error" in res_data:
-                                st.error("⚠️ AI Evaluation failed.")
-                            else:
-                                st.success("✅ AI Research Completed")
+                    # Quick AI Research action button (Clean layout)
+                    btn_label = "🔄 Rerun AI Research" if res_data is not None else "🔍 Run AI Research"
+                    if st.button(btn_label, key=f"outer_run_res_{match_id}", use_container_width=True):
+                        if not api_key:
+                            st.error("Please enter your Gemini API Key in the sidebar.")
                         else:
-                            st.info("💡 Research pending.")
-                    with col_btn:
-                        btn_label = "🔄 Rerun Research" if res_data is not None else "🔍 Run AI Research"
-                        if st.button(btn_label, key=f"outer_run_res_{match_id}", use_container_width=True):
-                            if not api_key:
-                                st.error("Please enter your Gemini API Key in the sidebar.")
-                            else:
-                                with st.spinner(f"Evaluating {match.home_team} vs {match.away_team}..."):
-                                    pick = evaluate_tactical_matchups_ai(match, api_key)
-                                    st.session_state.conviction_picks[match_id] = pick
-                                    st.rerun()
+                            with st.spinner(f"Evaluating {match.home_team} vs {match.away_team}..."):
+                                pick = evaluate_tactical_matchups_ai(match, api_key)
+                                st.session_state.conviction_picks[match_id] = pick
+                                st.rerun()
 
                     # Collapsible details expander
                     with st.expander("🔍 Match Details & Analysis", expanded=False):
