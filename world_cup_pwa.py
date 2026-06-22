@@ -3891,15 +3891,37 @@ def render_main_dashboard():
             help="Define the dollar value of 1 Unit to track real cash returns."
         )
 
-
     # --- Main Sync Trigger ---
-    st.button(
-        "Manual Sync Pipeline",
-        on_click=execute_sync_pipeline,
-        type="primary",
-        use_container_width=True,
-    )
-    st.caption("On-demand trigger: Scrapes lineups, fetches lines, evaluates matchups, and audits ledger.")
+    sync_col, settle_col = st.columns(2)
+    with sync_col:
+        st.button(
+            "🔄 Manual Sync Pipeline",
+            on_click=execute_sync_pipeline,
+            type="primary",
+            use_container_width=True,
+        )
+        st.caption("Full sync: scrapes odds, lineups, audits ledger. Use before games.")
+    with settle_col:
+        def execute_settle_only():
+            """Runs only the ledger audit step — no Gemini odds call, no Bovada scrape, no lineup fetch."""
+            st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+            with st.status("Settling pending bets...", expanded=True) as status:
+                try:
+                    api_key = st.session_state.get("gemini_api_key") or os.environ.get("GEMINI_API_KEY")
+                    status.update(label="Fetching final scores from API-Football...")
+                    audit_pending_ledger(api_key)
+                    status.update(label="Settlement complete.", state="complete")
+                except Exception as e:
+                    status.update(label=f"Settlement failed: {e}", state="error")
+
+        st.button(
+            "⚡ Settle Pending Bets",
+            on_click=execute_settle_only,
+            type="secondary",
+            use_container_width=True,
+        )
+        st.caption("Fast settle: resolves pending slips from final scores only.")
+
 
     st.divider()
 
