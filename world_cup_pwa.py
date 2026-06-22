@@ -2644,7 +2644,60 @@ def get_final_scores(api_key: str = "") -> Dict[str, str]:
         print(f"[DEBUG] Error getting final scores: {e}")
         return {}
 
-def determine_settlement_status(slip: LedgerEntry, match: Match, final_score_str: str) -> LedgerStatus:
+def resolve_prop_with_ai(slip: LedgerEntry, match: Match, api_key: str) -> LedgerStatus:
+    """
+    Uses Google Search Grounding (Gemini) to determine the outcome of a player prop or corner bet
+    based on actual web search results for the completed match.
+    """
+    if not api_key:
+        return LedgerStatus.VOID
+
+    prompt = f"""
+Analyze the final official statistics for the World Cup 2026 match: {match.home_team} vs {match.away_team} which kicked off on {match.kickoff_time.strftime("%A, %B %d, %Y")}.
+
+You need to verify the outcome of this specific betting selection:
+- Market Type: {slip.market_type}
+- Selection: {slip.selection}
+
+Perform a web search if necessary to find the official, verified stats. 
+Answer whether this bet WON, LOST, or if it should be VOID (e.g. if the player did not play/start).
+
+Format your output strictly as a JSON object matching this schema:
+{{
+  "outcome": "Won|Lost|Void",
+  "stat_value": "numeric value or description of the stat found (e.g. 'Alexander Isak had 3 shots on target' or 'There were 11 corners')",
+  "source": "Name of the source or website where the stat was verified"
+}}
+"""
+    try:
+        import json
+        grounded_result = try_grounded_generation(prompt, api_key)
+        content = grounded_result if grounded_result else generate_content_with_fallback(api_key, prompt, json_mode=True)
+        
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError:
+            if "```json" in content:
+                content = content.split("```json")[1].split("```")[0].strip()
+            elif "```" in content:
+                content = content.split("```")[1].split("```")[0].strip()
+            data = json.loads(content)
+            
+        outcome_str = data.get("outcome", "Void").strip().lower()
+        print(f"[DEBUG] AI Resolved Prop '{slip.selection}' ({slip.market_type}) for {match.match_id}: {outcome_str.upper()} (Value: {data.get('stat_value')}, Source: {data.get('source')})")
+        
+        if outcome_str == "won":
+            return LedgerStatus.WON
+        elif outcome_str == "lost":
+            return LedgerStatus.LOST
+        else:
+            return LedgerStatus.VOID
+    except Exception as e:
+        print(f"[DEBUG] Error resolving prop with AI: {e}")
+        return LedgerStatus.VOID
+
+
+def determine_settlement_status(slip: LedgerEntry, match: Match, final_score_str: str, api_key: str = "") -> LedgerStatus:
     """
     Determines the outcome of a bet based on the final score.
     """
@@ -2666,7 +2719,7 @@ def determine_settlement_status(slip: LedgerEntry, match: Match, final_score_str
                         unit_risk=slip.unit_risk,
                         status=LedgerStatus.PENDING
                     )
-                    status = determine_settlement_status(leg_slip, match, final_score_str)
+                    status = determine_settlement_status(leg_slip, match, final_score_str, api_key)
                     if status == LedgerStatus.PENDING:
                         return LedgerStatus.PENDING
                     leg_statuses.append(status)
@@ -2765,24 +2818,23 @@ def determine_settlement_status(slip: LedgerEntry, match: Match, final_score_str
                     else: return LedgerStatus.VOID
 
         elif slip.market_type == "Corners":
-            # Corner totals cannot be auto-settled from the scoreline alone.
-            # Mark as Void (stake returned) so they don't remain Pending forever;
-            # the user can manually override in the ledger if they have the stat.
+            if api_key:
+                return resolve_prop_with_ai(slip, match, api_key)
             return LedgerStatus.VOID
 
         elif slip.market_type == "Anytime Goalscorer":
-            # Individual goalscorer data is not parsed from the Wikipedia scoreline.
-            # Mark as Void so the entry is cleared; user can manually override.
+            if api_key:
+                return resolve_prop_with_ai(slip, match, api_key)
             return LedgerStatus.VOID
 
         elif slip.market_type in ("Player Shots", "Player Shots on Target"):
-            # Individual player shot stats are not available from the scoreline.
-            # Mark as Void so the entry is cleared; user can manually override.
+            if api_key:
+                return resolve_prop_with_ai(slip, match, api_key)
             return LedgerStatus.VOID
 
         elif slip.market_type == "Promo/Boost":
-            # Promo/Boost bets are unique offers that depend on the underlying market.
-            # Mark as Void so the entry is cleared; user can manually override.
+            if api_key:
+                return resolve_prop_with_ai(slip, match, api_key)
             return LedgerStatus.VOID
 
     except (ValueError, IndexError):
@@ -2820,7 +2872,7 @@ def audit_pending_ledger(api_key: str) -> None:
 
             match = Match.model_validate(match_data)
             final_score = final_scores[slip.match_id]
-            final_status = determine_settlement_status(slip, match, final_score)
+            final_status = determine_settlement_status(slip, match, final_score, api_key)
 
             if final_status in [LedgerStatus.WON, LedgerStatus.LOST, LedgerStatus.VOID]:
                 net_return = 0.0
@@ -2842,7 +2894,7 @@ def audit_pending_ledger(api_key: str) -> None:
                                     unit_risk=slip.unit_risk,
                                     status=LedgerStatus.PENDING
                                 )
-                                status = determine_settlement_status(leg_slip, match, final_score)
+                                status = determine_settlement_status(leg_slip, match, final_score, api_key)
                                 if status == LedgerStatus.WON:
                                     odds = leg.get("base_odds", 100)
                                     if odds > 0:
