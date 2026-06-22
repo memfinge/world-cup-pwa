@@ -34,28 +34,28 @@ st.set_page_config(
 # # Inject Custom Glassmorphic Dark-Mode Stylesheet at script startup to keep it persistent
 CUSTOM_CSS = """
 <style>
-/* Refined Dark-Mode Sports Theme */
+/* Refined Dark-Mode Sports Theme - Much Darker Vibe */
 .stApp {
-    background: linear-gradient(135deg, #050814, #0b1528, #03050b) !important;
-    color: #e2e8f0 !important;
+    background: linear-gradient(135deg, #020307, #060b14, #010204) !important;
+    color: #cbd5e1 !important;
 }
 
-/* Glassmorphic Cards with Subtle Slate/Turquoise Borders */
+/* Glassmorphic Cards with Deeper Slate backgrounds and subtle borders */
 div[data-testid="stExpander"], div[data-testid="element-container"] > div[style*="border"] {
-    background: rgba(15, 23, 42, 0.6) !important;
+    background: rgba(6, 10, 20, 0.82) !important;
     backdrop-filter: blur(12px) !important;
     -webkit-backdrop-filter: blur(12px) !important;
-    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    border: 1px solid rgba(255, 255, 255, 0.05) !important;
     border-radius: 12px !important;
-    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3) !important;
+    box-shadow: 0 8px 36px 0 rgba(0, 0, 0, 0.5) !important;
     transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
     margin-bottom: 12px !important;
 }
 
-/* Hover effect with soft turquoise highlight */
+/* Hover effect with soft premium glow */
 div[data-testid="stExpander"]:hover, div[data-testid="element-container"] > div[style*="border"]:hover {
-    border-color: rgba(0, 242, 254, 0.3) !important;
-    box-shadow: 0 12px 40px 0 rgba(0, 242, 254, 0.08) !important;
+    border-color: rgba(0, 242, 254, 0.2) !important;
+    box-shadow: 0 12px 40px 0 rgba(0, 242, 254, 0.05) !important;
     transform: translateY(-2px) !important;
 }
 
@@ -76,27 +76,28 @@ h1 {
 
 /* Premium Buttons (Deep Blue to Purple Gradient) */
 button {
-    background: linear-gradient(90deg, #1e40af, #6d28d9) !important;
+    background: linear-gradient(90deg, #111827, #3730a3) !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
     color: #ffffff !important;
-    border: none !important;
     border-radius: 8px !important;
     padding: 0.5rem 1.0rem !important;
     font-weight: 600 !important;
-    box-shadow: 0 4px 12px 0 rgba(99, 102, 241, 0.3) !important;
+    box-shadow: 0 4px 12px 0 rgba(0, 0, 0, 0.4) !important;
     transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
 }
 
 button:hover {
-    background: linear-gradient(90deg, #1d4ed8, #7c3aed) !important;
-    box-shadow: 0 6px 18px 0 rgba(99, 102, 241, 0.5) !important;
+    background: linear-gradient(90deg, #1f2937, #4338ca) !important;
+    border-color: rgba(0, 242, 254, 0.3) !important;
+    box-shadow: 0 6px 18px 0 rgba(0, 242, 254, 0.1) !important;
     transform: translateY(-1px) !important;
 }
 
 /* Form Controls & Inputs Styling */
 input, select, textarea {
-    background-color: rgba(15, 23, 42, 0.55) !important;
-    border: 1px solid rgba(255, 255, 255, 0.08) !important;
-    color: #f1f5f9 !important;
+    background-color: rgba(4, 6, 12, 0.85) !important;
+    border: 1px solid rgba(255, 255, 255, 0.05) !important;
+    color: #e2e8f0 !important;
     border-radius: 8px !important;
 }
 
@@ -127,10 +128,10 @@ div[data-testid="stMetricValue"] {
 .confidence-track {
     width: 100%;
     height: 10px;
-    background: rgba(255,255,255,0.07);
+    background: rgba(0,0,0,0.3);
     border-radius: 99px;
     overflow: hidden;
-    box-shadow: inset 0 1px 4px rgba(0,0,0,0.4);
+    box-shadow: inset 0 1px 4px rgba(0,0,0,0.6);
 }
 .confidence-fill {
     height: 100%;
@@ -140,9 +141,9 @@ div[data-testid="stMetricValue"] {
 
 /* Dashboard stat cards */
 .stat-card {
-    background: rgba(15, 23, 42, 0.6);
+    background: rgba(6, 10, 20, 0.82);
     backdrop-filter: blur(12px);
-    border: 1px solid rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.05);
     border-radius: 14px;
     padding: 1rem 1.25rem;
     text-align: center;
@@ -150,7 +151,7 @@ div[data-testid="stMetricValue"] {
 }
 .stat-card:hover {
     transform: translateY(-3px);
-    box-shadow: 0 10px 30px rgba(0,242,254,0.12);
+    box-shadow: 0 10px 30px rgba(0,242,254,0.08);
 }
 .stat-card .stat-value {
     font-size: 1.8rem;
@@ -175,7 +176,7 @@ div[data-testid="stMetricValue"] {
     justify-content: space-between;
     align-items: center;
     padding: 12px 10px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
     margin-bottom: 14px;
 }
 .scoreboard-team {
@@ -192,7 +193,7 @@ div[data-testid="stMetricValue"] {
     background-size: cover !important;
     background-position: center !important;
     background-repeat: no-repeat !important;
-    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8), 0 0 1px rgba(0, 0, 0, 0.5);
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.9), 0 0 2px rgba(0, 0, 0, 0.7);
 }
 .scoreboard-team.home {
     justify-content: flex-end;
@@ -211,7 +212,7 @@ div[data-testid="stMetricValue"] {
     color: #030712;
     padding: 3px 10px;
     border-radius: 20px;
-    box-shadow: 0 0 12px rgba(0, 242, 254, 0.35);
+    box-shadow: 0 0 12px rgba(0, 242, 254, 0.25);
     letter-spacing: 0.05em;
     text-transform: uppercase;
 }
@@ -226,19 +227,19 @@ div[data-testid="stMetricValue"] {
     letter-spacing: 0.02em;
 }
 .badge-confirmed {
-    background: rgba(0, 255, 135, 0.08);
+    background: rgba(0, 255, 135, 0.05);
     color: #00ff87;
-    border: 1px solid rgba(0, 255, 135, 0.15);
+    border: 1px solid rgba(0, 255, 135, 0.1);
 }
 .badge-projected {
-    background: rgba(124, 58, 237, 0.08);
+    background: rgba(124, 58, 237, 0.05);
     color: #a78bfa;
-    border: 1px solid rgba(124, 58, 237, 0.15);
+    border: 1px solid rgba(124, 58, 237, 0.1);
 }
 .badge-none {
-    background: rgba(100, 116, 139, 0.08);
+    background: rgba(100, 116, 139, 0.05);
     color: #94a3b8;
-    border: 1px solid rgba(100, 116, 139, 0.15);
+    border: 1px solid rgba(100, 116, 139, 0.1);
 }
 </style>
 """
