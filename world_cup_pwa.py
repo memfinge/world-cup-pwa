@@ -3814,9 +3814,10 @@ def render_main_dashboard():
                         if entry.net_return is not None:
                             unit_val = st.session_state.get("unit_value", 10.0)
                             ret_usd = entry.net_return * unit_val
-                            st.metric("Net", f"${ret_usd:+.2f}", delta=f"{entry.net_return:+.2f}u", delta_color="normal")
+                            st.markdown(f":{color}[**${ret_usd:+.2f}**]")
+                            st.caption(f":{color}[{entry.net_return:+.2f}u]")
                         else:
-                            st.metric("Net", "N/A", delta_color="off")
+                            st.markdown("**N/A**")
 
                     # Manual override and delete controls
                     with st.expander("🛠️ Settle or Delete Bet", expanded=False):
