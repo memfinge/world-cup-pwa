@@ -351,6 +351,179 @@ def calculate_kelly_fraction(base_odds: int, true_odds: int) -> float:
     return round(half_kelly, 1)
 
 
+def scrape_confirmed_lineup(home_team: str, away_team: str) -> Optional[Dict[str, Any]]:
+    """
+    Searches the web for an officially announced starting XI for today's match.
+    Returns {'home_lineup': [...], 'away_lineup': [...], 'confirmed': True} if a real
+    lineup is found (>= 8 recognisable names per side), or None otherwise.
+    """
+    import re
+    queries = [
+        f"{home_team} vs {away_team} confirmed starting lineup XI today 2026 World Cup",
+        f"{home_team} {away_team} starting 11 lineup announced official",
+    ]
+
+    raw_text = ""
+    for query in queries:
+        try:
+            from duckduckgo_search import DDGS
+            with DDGS() as ddgs:
+                results = list(ddgs.text(query, max_results=5))
+                for r in results:
+                    raw_text += f" {r.get('title', '')} {r.get('body', '')}"
+            if len(raw_text.strip()) > 200:
+                break
+        except Exception:
+            pass
+
+    if len(raw_text.strip()) < 100:
+        try:
+            import urllib.parse
+            url = f"https://news.search.yahoo.com/search?p={urllib.parse.quote(queries[0])}"
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+            resp = requests.get(url, headers=headers, timeout=6)
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, 'html.parser')
+                for item in soup.find_all("div", class_="NewsArticle")[:5]:
+                    title = (item.find("h4") or item.find("a") or "")
+                    snippet = (item.find("p") or item.find(class_="compText") or "")
+                    raw_text += f" {title.get_text() if hasattr(title,'get_text') else ''} {snippet.get_text() if hasattr(snippet,'get_text') else ''}"
+        except Exception:
+            pass
+
+    # Keyword check — only proceed if page actually discusses a confirmed lineup
+    confirmed_keywords = [
+        "starting xi", "starting lineup", "confirmed lineup", "line-up",
+        "starting eleven", "named lineup", "official lineup", "announced lineup"
+    ]
+    text_lower = raw_text.lower()
+    if not any(kw in text_lower for kw in confirmed_keywords):
+        return None  # No confirmed lineup language found
+
+    # Extract plausible player name tokens: "Firstname Lastname" capitalised pairs,
+    # or single-word names like "Musiala", "Ronaldo", "Mbappe"
+    name_pattern = re.compile(r'\b([A-Z][a-záéíóúãçñüàèìòùâêîôûäëïöü]+(?:\s+[A-Z][a-záéíóúãçñüàèìòùâêîôûäëïöü]+){0,2})\b')
+    candidates = name_pattern.findall(raw_text)
+
+    # Filter out obvious false positives (countries, month names, common words)
+    stop_words = {
+        home_team, away_team, "World", "Cup", "FIFA", "Match", "Today", "Group",
+        "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+        "January", "February", "March", "April", "May", "June", "July",
+        "August", "September", "October", "November", "December",
+        "Starting", "Lineup", "Confirmed", "Official", "Preview"
+    }
+    # Only keep tokens that appear at least twice (more likely to be actual players)
+    from collections import Counter
+    counts = Counter(candidates)
+    players = [name for name, cnt in counts.most_common(30) if cnt >= 1 and name not in stop_words and len(name) > 3]
+
+    if len(players) < 8:
+        return None  # Not enough names found to constitute a real lineup
+
+    # Split heuristically: first ~11 into home, next ~11 into away
+    # (Web snippets rarely split cleanly; we return what we have and let AI fill gaps)
+    home_players = players[:11]
+    away_players = players[11:22]
+
+    if len(home_players) < 8:
+        return None
+
+    return {
+        "home_lineup": home_players,
+        "away_lineup": away_players,
+        "confirmed": len(away_players) >= 8
+    }
+
+
+def fetch_and_store_lineups_for_today(match_objects: List["Match"], api_key: str) -> None:
+    """
+    For each match in match_objects that is scheduled TODAY (local date), attempts to:
+      1. Scrape a confirmed/announced starting XI from the web.
+      2. Fall back to AI-generated projected lineup if scraping finds nothing.
+    Updates the match record in the DB with the lineup and lineup_status.
+    Matches scheduled for future dates are completely skipped.
+    """
+    today_local = date.today()
+
+    for match in match_objects:
+        # Only process today's games — skip future dates entirely
+        match_date_utc = match.kickoff_time.date()
+        # Compare against today in Central Time (UTC-5 / UTC-6) to be safe
+        from datetime import timedelta
+        match_date_ct = (match.kickoff_time - timedelta(hours=5)).date()
+        if match_date_utc != today_local and match_date_ct != today_local:
+            continue  # Future match — skip
+
+        # Don't overwrite an already-confirmed lineup
+        if match.lineup_status == LineupStatus.CONFIRMED and len(match.home_lineup) >= 11:
+            st.write(f"  ✅ `{match.home_team} vs {match.away_team}`: lineup already confirmed, skipping.")
+            continue
+
+        home_lineup: List[str] = []
+        away_lineup: List[str] = []
+        new_status = LineupStatus.PROJECTED
+        source_label = ""
+
+        # --- Step 1: Try to scrape a confirmed lineup ---
+        try:
+            scraped = scrape_confirmed_lineup(match.home_team, match.away_team)
+            if scraped and len(scraped.get("home_lineup", [])) >= 8:
+                home_lineup = scraped["home_lineup"][:11]
+                away_lineup = scraped.get("away_lineup", [])[:11]
+                if scraped.get("confirmed") and len(away_lineup) >= 8:
+                    new_status = LineupStatus.CONFIRMED
+                    source_label = "🟢 Confirmed (web)"
+                else:
+                    new_status = LineupStatus.PROJECTED
+                    source_label = "🟡 Partially scraped (web)"
+        except Exception as scrape_err:
+            print(f"[DEBUG] Lineup scrape error for {match.match_id}: {scrape_err}")
+
+        # --- Step 2: Fall back to AI generation if scrape didn't produce enough names ---
+        needs_ai_home = len(home_lineup) < 11
+        needs_ai_away = len(away_lineup) < 11
+
+        if needs_ai_home or needs_ai_away:
+            if api_key:
+                try:
+                    gen = generate_projected_lineups(match.home_team, match.away_team, api_key)
+                    if gen:
+                        if needs_ai_home:
+                            home_lineup = gen.get("home_lineup", [])
+                        if needs_ai_away:
+                            away_lineup = gen.get("away_lineup", [])
+                        if not source_label:
+                            source_label = "🔵 AI Projected"
+                        else:
+                            source_label += " + AI fill"
+                        # Status stays PROJECTED when AI fills in any slots
+                        new_status = LineupStatus.PROJECTED
+                except Exception as gen_err:
+                    print(f"[DEBUG] AI lineup generation error for {match.match_id}: {gen_err}")
+
+        if not home_lineup and not away_lineup:
+            st.write(f"  ⚠️ `{match.home_team} vs {match.away_team}`: could not retrieve lineup.")
+            continue
+
+        # --- Update the match in the DB ---
+        try:
+            supabase.table("matches").update({
+                "home_lineup": home_lineup,
+                "away_lineup": away_lineup,
+                "lineup_status": new_status
+            }).eq("match_id", match.match_id).execute()
+
+            # Reflect in the in-memory object too
+            match.home_lineup = home_lineup
+            match.away_lineup = away_lineup
+            match.lineup_status = new_status
+
+            st.write(f"  {source_label} — `{match.home_team} vs {match.away_team}` ({len(home_lineup)} / {len(away_lineup)} players)")
+        except Exception as db_err:
+            print(f"[DEBUG] Failed to store lineup for {match.match_id}: {db_err}")
+
+
 def generate_projected_lineups(home_team: str, away_team: str, api_key: str) -> Optional[Dict[str, List[str]]]:
     """
     Calls Gemini to generate a realistic starting XI (11 players) for both the Home and Away teams.
@@ -376,10 +549,10 @@ Format your output strictly as a JSON object matching this schema:
             elif "```" in content:
                 content = content.split("```")[1].split("```")[0].strip()
             data = json.loads(content)
-            
+
         home_l = data.get("home_lineup", [])
         away_l = data.get("away_lineup", [])
-        
+
         return {
             "home_lineup": [str(p).strip() for p in home_l if p][:11],
             "away_lineup": [str(p).strip() for p in away_l if p][:11]
@@ -389,23 +562,33 @@ Format your output strictly as a JSON object matching this schema:
         return None
 
 
+
+
 def parse_time_local_as_utc(date_str: str, time_str: str) -> datetime:
     """
     Parses date and time from Wikipedia, returning a timezone-aware UTC datetime.
-    Keeps the local numbers as the hour/minute representation to avoid timezone shifting
-    on the Streamlit dashboard date filter.
+    Correctly extracts the UTC offset from strings like "3:00 pm UTC-6" and
+    converts the local time to true UTC for accurate storage and display.
     """
     import re
+    from datetime import timedelta
     # Replace non-breaking spaces
     time_str = time_str.replace('\xa0', ' ').strip()
     # Normalize unicode minus signs to standard hyphen-minus
     time_str = time_str.replace('\u2212', '-').replace('\u2013', '-')
-    
+
+    # Extract UTC offset (e.g. UTC-6, UTC+2) before stripping it
+    utc_offset_hours = 0
+    offset_match = re.search(r'UTC([+-])(\d+)', time_str)
+    if offset_match:
+        sign = 1 if offset_match.group(1) == '+' else -1
+        utc_offset_hours = sign * int(offset_match.group(2))
+
     # Remove UTC offset part from time_str
     time_clean = re.sub(r'UTC[+-]\d+', '', time_str).strip()
     # Replace dots in a.m./p.m.
     time_clean = time_clean.replace('.', '').strip()
-    
+
     dt_str = f"{date_str} {time_clean}"
     try:
         dt = datetime.strptime(dt_str, "%Y-%m-%d %I:%M %p")
@@ -415,8 +598,35 @@ def parse_time_local_as_utc(date_str: str, time_str: str) -> datetime:
             dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M")
         except Exception:
             dt = datetime.strptime(date_str, "%Y-%m-%d")
-            
-    return dt.replace(tzinfo=timezone.utc)
+
+    # Apply the offset to convert local venue time → true UTC
+    dt_utc = dt - timedelta(hours=utc_offset_hours)
+    return dt_utc.replace(tzinfo=timezone.utc)
+
+
+def to_central_time(dt_utc: datetime) -> tuple:
+    """
+    Converts a UTC datetime to US Central Time (CDT = UTC-5 in summer,
+    CST = UTC-6 Nov–Mar). Returns (dt_central, label) where label is
+    'CDT' or 'CST'.
+    """
+    from datetime import timedelta
+    # CDT (UTC-5): second Sunday in March through first Sunday in November
+    year = dt_utc.year
+    # Second Sunday in March
+    march = datetime(year, 3, 1)
+    dst_start = march.replace(day=8 + (6 - march.weekday()) % 7)  # first Sunday
+    dst_start = dst_start.replace(day=dst_start.day + 7)           # second Sunday
+    # First Sunday in November
+    november = datetime(year, 11, 1)
+    dst_end = november.replace(day=1 + (6 - november.weekday()) % 7)
+    # Both boundaries at 02:00 UTC (07:00 CST → spring forward / 06:00 CDT → fall back)
+    dst_start_utc = dst_start.replace(hour=8, tzinfo=timezone.utc)   # 02:00 CST = 08:00 UTC
+    dst_end_utc   = dst_end.replace(hour=7, tzinfo=timezone.utc)     # 02:00 CDT = 07:00 UTC
+    if dst_start_utc <= dt_utc < dst_end_utc:
+        return dt_utc + timedelta(hours=-5), "CDT"
+    else:
+        return dt_utc + timedelta(hours=-6), "CST"
 
 
 @st.cache_data(ttl=1800)
@@ -605,6 +815,421 @@ def get_weather_context(venue_city: str, match_date: str) -> str:
         return ""
 
 
+_AF_BASE = "https://v3.football.api-sports.io"
+_AF_WC_LEAGUE = 1      # FIFA World Cup
+_AF_WC_SEASON = 2026   # 2026 season
+
+# ---------------------------------------------------------------------------
+# Budget-aware API-Football request helper
+# Each call is independently cached by (endpoint, frozen params, ttl bucket)
+# so different data types can have different cache lifetimes.
+# ---------------------------------------------------------------------------
+
+@st.cache_data(ttl=3600)   # 1 hour — default for most match-day data
+def _af_get_1h(endpoint: str, params_key: str, params: dict) -> dict:
+    """Cached GET with 1-hour TTL. params_key must be a hashable string."""
+    api_key = os.environ.get("API_FOOTBALL_KEY", "")
+    if not api_key:
+        return {}
+    try:
+        headers = {"x-apisports-key": api_key}
+        resp = requests.get(f"{_AF_BASE}/{endpoint}", headers=headers, params=params, timeout=10)
+        if resp.status_code == 200:
+            remaining = resp.headers.get("x-ratelimit-requests-remaining", "?")
+            print(f"[AF] {endpoint} | remaining today: {remaining}")
+            return resp.json()
+    except Exception as e:
+        print(f"[DEBUG] API-Football request failed ({endpoint}): {e}")
+    return {}
+
+
+@st.cache_data(ttl=14400)  # 4 hours — slow-changing data (injuries, player stats, team stats)
+def _af_get_4h(endpoint: str, params_key: str, params: dict) -> dict:
+    """Cached GET with 4-hour TTL. params_key must be a hashable string."""
+    api_key = os.environ.get("API_FOOTBALL_KEY", "")
+    if not api_key:
+        return {}
+    try:
+        headers = {"x-apisports-key": api_key}
+        resp = requests.get(f"{_AF_BASE}/{endpoint}", headers=headers, params=params, timeout=10)
+        if resp.status_code == 200:
+            remaining = resp.headers.get("x-ratelimit-requests-remaining", "?")
+            print(f"[AF] {endpoint} | remaining today: {remaining}")
+            return resp.json()
+    except Exception as e:
+        print(f"[DEBUG] API-Football request failed ({endpoint}): {e}")
+    return {}
+
+
+# Keep backward compat — existing calls used _af_get at 15min TTL;
+# migrate them to 1h since lineup/form don't need 15-min refresh.
+def _af_get(endpoint: str, params: dict) -> dict:
+    """Convenience wrapper — routes to 1h cache."""
+    return _af_get_1h(endpoint, str(sorted(params.items())), params)
+
+
+@st.cache_data(ttl=3600)
+def _af_find_team_id(team_name: str) -> Optional[int]:
+    """Searches API-Football for a team by name and returns its integer ID."""
+    data = _af_get_1h("teams", str({"name": team_name, "league": _AF_WC_LEAGUE}),
+                      {"name": team_name, "league": _AF_WC_LEAGUE, "season": _AF_WC_SEASON})
+    teams = data.get("response", [])
+    if teams:
+        return teams[0]["team"]["id"]
+    # Broad fallback — search without league filter
+    data2 = _af_get_1h("teams", str({"name": team_name}), {"name": team_name})
+    teams2 = data2.get("response", [])
+    if teams2:
+        return teams2[0]["team"]["id"]
+    return None
+
+
+def get_api_football_context(home_team: str, away_team: str) -> str:
+    """
+    Fetches structured, factual data from API-Football for the given match.
+    Budget: ~15 requests on first call, ~0 on repeat (cached).
+
+    Data fetched:
+      1. Last 5 results + form string per team             (2 req, 1hr cache)
+      2. Head-to-head record, last 10 meetings             (1 req, 1hr cache)
+      3. Group standings                                   (1 req, 1hr cache)
+      4. Today's confirmed lineup                          (2 req, 1hr cache)
+      5. Tournament aggregate team stats (shots/corners…)  (2 req, 4hr cache)  ← NEW
+      6. Active injury list per team                       (2 req, 4hr cache)  ← NEW
+      7. Model predictions (win %, goals, comparison)      (1 req, 1hr cache)  ← NEW
+      8. Per-player tournament stats (starters only)       (2 req, 4hr cache)  ← NEW
+    """
+    api_key = os.environ.get("API_FOOTBALL_KEY", "")
+    if not api_key:
+        return ""
+
+    sections = []
+
+    # --- Resolve team IDs ---
+    home_id = _af_find_team_id(home_team)
+    away_id = _af_find_team_id(away_team)
+
+    if not home_id or not away_id:
+        print(f"[DEBUG] API-Football: could not resolve team IDs for {home_team} ({home_id}) / {away_team} ({away_id})")
+        return ""
+
+    # --- Last 5 fixtures for each team ---
+    def _format_form(team_name: str, team_id: int) -> str:
+        data = _af_get_1h("fixtures", str({"team": team_id, "last": 5}),
+                          {"team": team_id, "league": _AF_WC_LEAGUE, "season": _AF_WC_SEASON,
+                           "last": 5, "status": "FT"})
+        fixtures = data.get("response", [])
+        if not fixtures:
+            return f"{team_name}: No recent results found in API-Football."
+        lines = [f"{team_name} — Last {len(fixtures)} results:"]
+        form_chars = []
+        for f in reversed(fixtures):
+            home = f["teams"]["home"]["name"]
+            away = f["teams"]["away"]["name"]
+            hg = f["goals"]["home"] if f["goals"]["home"] is not None else "?"
+            ag = f["goals"]["away"] if f["goals"]["away"] is not None else "?"
+            winner = f["teams"]["home"]["winner"]
+            if f["teams"]["home"]["id"] == team_id:
+                result = "W" if winner is True else ("L" if winner is False else "D")
+                lines.append(f"  {result}  {home} {hg}\u2013{ag} {away}")
+            else:
+                result = "W" if winner is False else ("L" if winner is True else "D")
+                lines.append(f"  {result}  {home} {hg}\u2013{ag} {away}")
+            form_chars.append(result)
+        lines.append(f"  Form (oldest\u2192newest): {''.join(form_chars)}")
+        return "\n".join(lines)
+
+    sections.append("[TEAM FORM — API-Football (Real Data)]")
+    sections.append(_format_form(home_team, home_id))
+    sections.append("")
+    sections.append(_format_form(away_team, away_id))
+
+    # --- Head-to-Head ---
+    h2h_data = _af_get_1h("fixtures/headtohead",
+                           str({"h2h": f"{home_id}-{away_id}", "last": 10}),
+                           {"h2h": f"{home_id}-{away_id}", "last": 10})
+    h2h_fixtures = h2h_data.get("response", [])
+    if h2h_fixtures:
+        sections.append("")
+        sections.append("[HEAD-TO-HEAD — API-Football (Real Data, Last 10)]")
+        home_wins = away_wins = draws = 0
+        for f in h2h_fixtures:
+            home = f["teams"]["home"]["name"]
+            away = f["teams"]["away"]["name"]
+            hg = f["goals"]["home"] if f["goals"]["home"] is not None else "?"
+            ag = f["goals"]["away"] if f["goals"]["away"] is not None else "?"
+            winner = f["teams"]["home"]["winner"]
+            dt = f["fixture"]["date"][:10]
+            sections.append(f"  {dt}: {home} {hg}\u2013{ag} {away}")
+            if winner is None:
+                draws += 1
+            elif f["teams"]["home"]["id"] == home_id and winner is True:
+                home_wins += 1
+            elif f["teams"]["away"]["id"] == home_id and winner is False:
+                home_wins += 1
+            else:
+                away_wins += 1
+        sections.append(f"  Summary: {home_team} {home_wins}W \u2014 {draws}D \u2014 {away_wins}W {away_team}")
+
+    # --- Group Standings ---
+    standings_data = _af_get_1h("standings", str({"league": _AF_WC_LEAGUE, "season": _AF_WC_SEASON}),
+                                {"league": _AF_WC_LEAGUE, "season": _AF_WC_SEASON})
+    standings_resp = standings_data.get("response", [])
+    if standings_resp:
+        all_groups = standings_resp[0].get("league", {}).get("standings", [])
+        home_group = away_group = None
+        for grp in all_groups:
+            team_ids_in_group = [t["team"]["id"] for t in grp]
+            if home_id in team_ids_in_group:
+                home_group = grp
+            if away_id in team_ids_in_group:
+                away_group = grp
+
+        def _format_group(group: list) -> str:
+            lines = []
+            for t in group:
+                rank = t.get("rank", "?")
+                name = t["team"]["name"]
+                pts = t["points"]
+                played = t["all"]["played"]
+                gd = t["goalsDiff"]
+                gf = t["all"]["goals"]["for"]
+                ga = t["all"]["goals"]["against"]
+                form = t.get("form", "")
+                # Qualification context
+                status = t.get("description", "")
+                status_note = f" [{status}]" if status else ""
+                lines.append(f"  {rank}. {name:<25} {played}P  {pts}pts  GD:{gd:+d}  ({gf}:{ga})  Form:{form}{status_note}")
+            return "\n".join(lines)
+
+        if home_group:
+            sections.append("")
+            sections.append(f"[GROUP STANDINGS \u2014 {home_team}'s Group]")
+            sections.append(_format_group(home_group))
+        if away_group and away_group is not home_group:
+            sections.append("")
+            sections.append(f"[GROUP STANDINGS \u2014 {away_team}'s Group]")
+            sections.append(_format_group(away_group))
+
+    # --- Today's Confirmed Lineup (if announced) ---
+    today_str = date.today().isoformat()
+    fixture_data = _af_get_1h("fixtures", str({"team": home_id, "date": today_str}),
+                              {"team": home_id, "league": _AF_WC_LEAGUE,
+                               "season": _AF_WC_SEASON, "date": today_str})
+    today_fixtures = fixture_data.get("response", [])
+    fixture_id = None
+    confirmed_starters: dict = {}   # team_id -> list of player names
+    for fx in today_fixtures:
+        h_id = fx["teams"]["home"]["id"]
+        a_id = fx["teams"]["away"]["id"]
+        if (h_id == home_id and a_id == away_id) or (h_id == away_id and a_id == home_id):
+            fixture_id = fx["fixture"]["id"]
+            break
+
+    if fixture_id:
+        lineup_data = _af_get_1h("fixtures/lineups", str({"fixture": fixture_id}),
+                                 {"fixture": fixture_id})
+        lineup_resp = lineup_data.get("response", [])
+        if lineup_resp:
+            sections.append("")
+            sections.append("[CONFIRMED LINEUPS \u2014 API-Football]")
+            for team_lu in lineup_resp:
+                tname = team_lu["team"]["name"]
+                tid = team_lu["team"]["id"]
+                formation = team_lu.get("formation", "N/A")
+                starters = [p["player"]["name"] for p in team_lu.get("startXI", [])]
+                confirmed_starters[tid] = starters
+                sections.append(f"  {tname} ({formation}): {', '.join(starters)}")
+
+    # -----------------------------------------------------------------------
+    # NEW SECTION 5: Tournament aggregate team statistics (4hr cache)
+    # 1 request per team = 2 requests total
+    # -----------------------------------------------------------------------
+    def _format_team_stats(team_name: str, team_id: int) -> str:
+        data = _af_get_4h("teams/statistics",
+                          str({"team": team_id, "league": _AF_WC_LEAGUE}),
+                          {"team": team_id, "league": _AF_WC_LEAGUE, "season": _AF_WC_SEASON})
+        resp = data.get("response", {})
+        if not resp:
+            return f"{team_name}: No tournament stats available yet."
+
+        fixtures = resp.get("fixtures", {})
+        goals_for = resp.get("goals", {}).get("for", {})
+        goals_against = resp.get("goals", {}).get("against", {})
+        played = fixtures.get("played", {}).get("total", 0) or 1  # avoid div/0
+
+        gf_total = goals_for.get("total", {}).get("total", 0) or 0
+        ga_total = goals_against.get("total", {}).get("total", 0) or 0
+        gf_avg = round(gf_total / played, 2)
+        ga_avg = round(ga_total / played, 2)
+
+        clean_sheets = resp.get("clean_sheet", {}).get("total", "N/A")
+        failed_to_score = resp.get("failed_to_score", {}).get("total", "N/A")
+
+        wins = fixtures.get("wins", {}).get("total", "?")
+        draws = fixtures.get("draws", {}).get("total", "?")
+        losses = fixtures.get("loses", {}).get("total", "?")
+
+        lines = [
+            f"{team_name} — Tournament Aggregate Stats ({played} games played):",
+            f"  Record: {wins}W {draws}D {losses}L",
+            f"  Goals For: {gf_total} ({gf_avg}/game) | Goals Against: {ga_total} ({ga_avg}/game)",
+            f"  Clean Sheets: {clean_sheets} | Failed to Score: {failed_to_score}",
+        ]
+
+        # Biggest win / heaviest defeat
+        biggest = resp.get("biggest", {})
+        bw = biggest.get("wins", {}).get("total", "")
+        bl = biggest.get("loses", {}).get("total", "")
+        if bw:
+            lines.append(f"  Biggest Win: {bw}")
+        if bl:
+            lines.append(f"  Heaviest Defeat: {bl}")
+
+        # Average goals by half
+        gf_h1 = goals_for.get("minute", {}).get("0-45", {}).get("total", 0) or 0
+        gf_h2 = goals_for.get("minute", {}).get("46-90", {}).get("total", 0) or 0
+        ga_h1 = goals_against.get("minute", {}).get("0-45", {}).get("total", 0) or 0
+        ga_h2 = goals_against.get("minute", {}).get("46-90", {}).get("total", 0) or 0
+        lines.append(f"  Goals by Half — Scored: H1={gf_h1} H2={gf_h2} | Conceded: H1={ga_h1} H2={ga_h2}")
+
+        return "\n".join(lines)
+
+    sections.append("")
+    sections.append("[TEAM TOURNAMENT STATISTICS \u2014 API-Football (Real Data)]")
+    sections.append(_format_team_stats(home_team, home_id))
+    sections.append("")
+    sections.append(_format_team_stats(away_team, away_id))
+
+    # -----------------------------------------------------------------------
+    # NEW SECTION 6: Active injuries (4hr cache)
+    # 1 request per team = 2 requests total
+    # -----------------------------------------------------------------------
+    def _format_injuries(team_name: str, team_id: int) -> str:
+        data = _af_get_4h("injuries",
+                          str({"team": team_id, "league": _AF_WC_LEAGUE, "season": _AF_WC_SEASON}),
+                          {"team": team_id, "league": _AF_WC_LEAGUE, "season": _AF_WC_SEASON})
+        inj_list = data.get("response", [])
+        if not inj_list:
+            return f"{team_name}: No injuries reported in API-Football."
+        lines = [f"{team_name} Injury Report:"]
+        for entry in inj_list[:10]:  # cap at 10 to avoid prompt bloat
+            player = entry.get("player", {}).get("name", "Unknown")
+            ptype = entry.get("player", {}).get("type", "")
+            reason = entry.get("player", {}).get("reason", "")
+            lines.append(f"  \u2022 {player} \u2014 {ptype}: {reason}")
+        return "\n".join(lines)
+
+    sections.append("")
+    sections.append("[INJURY REPORT \u2014 API-Football (Real Data)]")
+    sections.append(_format_injuries(home_team, home_id))
+    sections.append("")
+    sections.append(_format_injuries(away_team, away_id))
+
+    # -----------------------------------------------------------------------
+    # NEW SECTION 7: Model predictions (1hr cache)
+    # 1 request per fixture
+    # Only runs when fixture_id is known (today's game)
+    # -----------------------------------------------------------------------
+    if fixture_id:
+        pred_data = _af_get_1h("predictions",
+                               str({"fixture": fixture_id}),
+                               {"fixture": fixture_id})
+        pred_resp = pred_data.get("response", [])
+        if pred_resp:
+            pred = pred_resp[0]
+            predictions = pred.get("predictions", {})
+            winner_pred = predictions.get("winner", {}) or {}
+            advice = predictions.get("advice", "")
+            goals_home = predictions.get("goals", {}).get("home", "?")
+            goals_away = predictions.get("goals", {}).get("away", "?")
+            under_over = predictions.get("under_over", "?")  # e.g. "+2.5" or "-2.5"
+
+            comparison = pred.get("comparison", {})
+
+            def _comp(key: str) -> str:
+                c = comparison.get(key, {})
+                h = c.get("home", "?")
+                a = c.get("away", "?")
+                return f"{h} / {a}"
+
+            sections.append("")
+            sections.append("[API-FOOTBALL MODEL PREDICTIONS \u2014 Statistical Model Output]")
+            sections.append(f"  Predicted winner: {winner_pred.get('name', '?')} (comment: {winner_pred.get('comment', '?')})")
+            sections.append(f"  Model advice: {advice}")
+            sections.append(f"  Predicted goals: {home_team} {goals_home} \u2013 {goals_away} {away_team}")
+            sections.append(f"  Model over/under lean: {under_over}")
+            sections.append("  Team comparison scores (home / away):")
+            for metric in ["form", "att", "def", "poisson_distribution", "h2h", "goals", "total"]:
+                val = _comp(metric)
+                if val != "? / ?":
+                    sections.append(f"    {metric:<22}: {val}")
+            sections.append("  NOTE: Use this as a supplementary signal, not a primary source.")
+
+    # -----------------------------------------------------------------------
+    # NEW SECTION 8: Per-player tournament stats (starters only, 4hr cache)
+    # 1 request per team = 2 requests total
+    # Filtered to players in the confirmed starting XI to stay focused
+    # -----------------------------------------------------------------------
+    def _format_player_stats(team_name: str, team_id: int, starter_names: list) -> str:
+        data = _af_get_4h("players",
+                          str({"team": team_id, "league": _AF_WC_LEAGUE, "season": _AF_WC_SEASON}),
+                          {"team": team_id, "league": _AF_WC_LEAGUE, "season": _AF_WC_SEASON})
+        players = data.get("response", [])
+        if not players:
+            return f"{team_name}: No player stats available yet."
+
+        # If we have starter names, filter to just those. Otherwise show top 11 by minutes.
+        def _name_match(api_name: str, starter_list: list) -> bool:
+            api_lower = api_name.lower()
+            return any(
+                s.lower() in api_lower or api_lower in s.lower()
+                for s in starter_list
+            )
+
+        if starter_names:
+            relevant = [p for p in players if _name_match(p["player"]["name"], starter_names)]
+        else:
+            relevant = sorted(players,
+                              key=lambda p: p["statistics"][0].get("games", {}).get("minutes", 0) or 0,
+                              reverse=True)[:11]
+
+        if not relevant:
+            return f"{team_name}: Could not match player stats to starters."
+
+        lines = [f"{team_name} — Player Tournament Stats (starters):"]
+        lines.append(f"  {'Name':<22} {'Pos':<5} {'Min':>4} {'G':>3} {'A':>3} {'Sh':>4} {'SoT':>4} {'KP':>4} {'FC':>4} {'YC':>3}")
+        lines.append(f"  {'-'*70}")
+        for entry in relevant:
+            p = entry["player"]
+            s = entry["statistics"][0] if entry.get("statistics") else {}
+            name = p.get("name", "?")[:22]
+            pos = (s.get("games", {}).get("position") or "?")[:5]
+            mins = s.get("games", {}).get("minutes") or 0
+            goals = s.get("goals", {}).get("total") or 0
+            assists = s.get("goals", {}).get("assists") or 0
+            shots = s.get("shots", {}).get("total") or 0
+            sot = s.get("shots", {}).get("on") or 0
+            kp = s.get("passes", {}).get("key") or 0
+            fc = s.get("fouls", {}).get("committed") or 0
+            yc = s.get("cards", {}).get("yellow") or 0
+            lines.append(f"  {name:<22} {pos:<5} {mins:>4} {goals:>3} {assists:>3} {shots:>4} {sot:>4} {kp:>4} {fc:>4} {yc:>3}")
+        lines.append("  (Cols: Min=minutes, G=goals, A=assists, Sh=shots, SoT=shots on target, KP=key passes, FC=fouls committed, YC=yellow cards)")
+        return "\n".join(lines)
+
+    home_starters = confirmed_starters.get(home_id, [])
+    away_starters = confirmed_starters.get(away_id, [])
+
+    sections.append("")
+    sections.append("[PLAYER TOURNAMENT STATISTICS \u2014 API-Football (Real Data)]")
+    sections.append("Use shot (Sh/SoT) columns for player shots props. Use YC/FC for cards markets.")
+    sections.append(_format_player_stats(home_team, home_id, home_starters))
+    sections.append("")
+    sections.append(_format_player_stats(away_team, away_id, away_starters))
+
+    return "\n".join(sections)
+
+
 def get_form_and_h2h_context(home_team: str, away_team: str) -> str:
     """
     Runs targeted searches for team recent form, H2H history, xG/stats, and referee data.
@@ -737,6 +1362,53 @@ def clean_name(name: str) -> str:
     )
 
 
+def compress_and_structure_news(raw_news: str) -> str:
+    """
+    Compresses raw news snippets by filtering for lines containing tactical,
+    injury, card, referee, or line information, and eliminating near-duplicate lines.
+    """
+    if not raw_news:
+        return ""
+    import re
+    keywords = [
+        "injur", "out", "doubt", "questionable", "suspend", "miss", "absence", "return",
+        "recover", "fitness", "muscle", "hamstring", "ankle", "knee", "calf", "groin",
+        "card", "red", "yellow", "referee", "appoint", "lineup", "tactical", "formation",
+        "pressing", "style", "odds", "boost", "promo", "total", "spread", "moneyline",
+        "goalscorer", "shots", "corners", "history", "h2h", "xg", "expected goals", "versus", "vs"
+    ]
+    seen_normalized = set()
+    cleaned_lines = []
+    
+    # Split raw news into lines/bullets
+    for line in raw_news.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        
+        # Check if line matches keywords
+        lower_line = line.lower()
+        if not any(kw in lower_line for kw in keywords):
+            continue
+            
+        # Deduplicate using alphanumeric characters
+        norm_key = re.sub(r'[^a-z0-9]', '', lower_line)
+        # Skip if we already have this line or a very short substring
+        if norm_key in seen_normalized:
+            continue
+        
+        # Keep track
+        seen_normalized.add(norm_key)
+        
+        # Format bullet nicely if it isn't already
+        if not line.startswith("•") and not line.startswith("-") and not line.startswith("*"):
+            line = f"• {line}"
+            
+        cleaned_lines.append(line)
+        
+    return "\n".join(cleaned_lines)
+
+
 def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = ""):
     """
     Discovers actual upcoming World Cup matches by parsing the Wikipedia schedule,
@@ -749,6 +1421,41 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
     try:
         target_date_iso = target_date.strftime("%Y-%m-%d")
         target_date_str = target_date.strftime("%A, %B %d, %Y")
+
+        # Check cache unless bypassed
+        bypass = st.session_state.get("bypass_sync_cache", False)
+        if not bypass:
+            try:
+                existing_matches = supabase.table("matches").select("match_id, updated_at").filter("kickoff_time", "gte", f"{target_date_iso}T00:00:00+00:00").filter("kickoff_time", "lte", f"{target_date_iso}T23:59:59+00:00").execute()
+                if existing_matches.data:
+                    newest_update = None
+                    for m in existing_matches.data:
+                        up_at = m.get("updated_at")
+                        if up_at:
+                            try:
+                                dt = datetime.fromisoformat(up_at.replace("Z", "+00:00"))
+                                if newest_update is None or dt > newest_update:
+                                    newest_update = dt
+                            except Exception:
+                                pass
+                    if newest_update:
+                        now_utc = datetime.now(timezone.utc)
+                        diff_sec = (now_utc - newest_update).total_seconds()
+                        if diff_sec < 900:  # 15 minutes
+                            st.info(f"⚡ Using cached match & odds data (synced {int(diff_sec // 60)}m ago). Check 'Bypass Sync Cache' in the sidebar to force refresh.")
+                            # Re-populate venue_map
+                            venue_map = {}
+                            try:
+                                all_matches = get_wikipedia_matches()
+                                for wm in all_matches:
+                                    if wm["date"] == target_date_iso:
+                                        venue_map[f"{wm['home_team']}|{wm['away_team']}"] = wm.get("venue_city", "")
+                            except Exception:
+                                pass
+                            st.session_state['venue_map'] = venue_map
+                            return
+            except Exception as cache_check_err:
+                print(f"[DEBUG] Error checking sync cache: {cache_check_err}")
         
         # 1. Fetch matches from Wikipedia
         all_matches = get_wikipedia_matches()
@@ -1252,6 +1959,9 @@ Guidelines:
         # Clear existing matches and odds for this target date to prevent duplicates/stale data
         # But first snapshot existing odds for line movement detection
         line_movement_data: Dict[str, int] = {}
+        if 'odds_trend_history' not in st.session_state:
+            st.session_state['odds_trend_history'] = {}
+
         try:
             matches_to_del = supabase.table("matches").select("match_id").filter("kickoff_time", "gte", f"{target_date_iso}T00:00:00+00:00").filter("kickoff_time", "lte", f"{target_date_iso}T23:59:59+00:00").execute()
             ids_to_del = [m['match_id'] for m in matches_to_del.data]
@@ -1261,6 +1971,13 @@ Guidelines:
                 for o in existing_odds_resp.data:
                     key = f"{o['match_id']}|{o['market_type']}|{o['selection']}"
                     line_movement_data[key] = o['dk_odds']
+                    # Log to trend history
+                    history = st.session_state['odds_trend_history'].setdefault(key, [])
+                    if not history or history[-1] != o['dk_odds']:
+                        history.append(o['dk_odds'])
+                        if len(history) > 5:
+                            history.pop(0)
+
                 print(f"[DEBUG] Snapshotted {len(line_movement_data)} existing odds for line movement detection.")
                 supabase.table("odds").delete().in_("match_id", ids_to_del).execute()
                 supabase.table("matches").delete().in_("match_id", ids_to_del).execute()
@@ -1303,6 +2020,14 @@ Guidelines:
         if discovered_odds:
             supabase.table("odds").upsert(discovered_odds, on_conflict="match_id,market_type,selection").execute()
             st.toast(f"Successfully generated and updated {len(discovered_odds)} odds entries.")
+            # Record final synced odds in trend history
+            for o in discovered_odds:
+                key = f"{o['match_id']}|{o['market_type']}|{o['selection']}"
+                history = st.session_state.setdefault('odds_trend_history', {}).setdefault(key, [])
+                if not history or history[-1] != o['dk_odds']:
+                    history.append(o['dk_odds'])
+                    if len(history) > 5:
+                        history.pop(0)
             
     except Exception as e:
         print(f"[DEBUG] Error during match scraping: {e}")
@@ -1332,6 +2057,154 @@ def calculate_parlay_odds(odds_list: list[int]) -> int:
     return int(round(ans))
 
 
+def validate_sgp_legs(legs: list) -> bool:
+    """
+    Programmatically checks SGP legs for logical contradictions and mathematical impossibility.
+    Returns True if valid (no contradictions), and False if invalid (contradiction found).
+    """
+    if not legs or len(legs) < 2:
+        return False
+        
+    moneylines = []
+    btts_selections = []
+    totals = {}
+    spreads = {}
+    
+    for leg in legs:
+        sel = leg.get("selection", "").strip()
+        mtype = leg.get("market_type", "").strip()
+        
+        # 1. Moneyline contradictions
+        if mtype == "Moneyline":
+            moneylines.append(sel.lower())
+            
+        # 2. BTTS contradictions
+        elif mtype == "BTTS":
+            btts_selections.append(sel.lower())
+            
+        # 3. Total Goals contradictions
+        elif mtype == "Total Goals":
+            parts = sel.split()
+            if len(parts) == 2:
+                direction = parts[0].lower() # over/under
+                try:
+                    line = float(parts[1])
+                    totals[direction] = line
+                except ValueError:
+                    pass
+                    
+        # 4. Spread contradictions
+        elif mtype == "Spread":
+            parts = sel.split()
+            if len(parts) >= 2:
+                team = " ".join(parts[:-1]).lower()
+                handicap_str = parts[-1]
+                try:
+                    handicap = float(handicap_str)
+                    spreads[team] = handicap
+                except ValueError:
+                    pass
+
+    # -- Apply logical rule checks --
+    
+    # Rule A: Cannot select more than one Moneyline outcome
+    if len(moneylines) > 1:
+        print(f"[DEBUG] SGP Validation Failed: Multiple Moneyline outcomes selected ({moneylines})")
+        return False
+        
+    # Rule B: Cannot select both BTTS Yes and BTTS No
+    if "yes" in btts_selections and "no" in btts_selections:
+        print(f"[DEBUG] SGP Validation Failed: Both BTTS Yes and No selected")
+        return False
+        
+    # Rule C: Conflicting Total Goals limits (e.g. Over 2.5 and Under 2.5)
+    if "over" in totals and "under" in totals:
+        over_val = totals["over"]
+        under_val = totals["under"]
+        if over_val >= under_val:
+            print(f"[DEBUG] SGP Validation Failed: Contradictory goals limits (Over {over_val} vs Under {under_val})")
+            return False
+            
+    # Rule D: BTTS Yes and Under 1.5 Goals is impossible
+    if "yes" in btts_selections:
+        if "under" in totals and totals["under"] <= 1.5:
+            print(f"[DEBUG] SGP Validation Failed: BTTS Yes is incompatible with Under {totals['under']} goals")
+            return False
+            
+    # Rule E: Contradictory Spreads (e.g. Germany -1.5 and Ivory Coast -1.5)
+    if len(spreads) > 1:
+        negative_spreads = [t for t, h in spreads.items() if h < 0]
+        if len(negative_spreads) > 1:
+            print(f"[DEBUG] SGP Validation Failed: Multiple negative spreads selected ({spreads})")
+            return False
+            
+    return True
+
+
+def compute_implied_probabilities(odds_data: list) -> str:
+    """
+    Pre-computes implied and vig-adjusted probabilities for every market in odds_data.
+    Groups selections by market_type, strips the bookmaker's vig, then returns a
+    formatted string table ready to paste directly into the AI prompt.
+
+    For a two-outcome market (e.g. BTTS Yes/No):
+      raw_implied  = 1 / decimal_odds   for each outcome
+      vig          = sum(raw_implied) - 1.0
+      vig_adjusted = raw_implied / sum(raw_implied)   (normalised to 100%)
+
+    For three-outcome markets (Moneyline: Home / Draw / Away) the same formula applies.
+    """
+    from collections import defaultdict
+
+    def american_to_decimal(odds: int) -> float:
+        if odds >= 0:
+            return (odds / 100.0) + 1.0
+        else:
+            return (100.0 / abs(odds)) + 1.0
+
+    def american_to_raw_implied(odds: int) -> float:
+        dec = american_to_decimal(odds)
+        return 1.0 / dec if dec > 0 else 0.0
+
+    # Group by market_type
+    markets: dict = defaultdict(list)
+    for o in odds_data:
+        markets[o["market_type"]].append(o)
+
+    lines = []
+    lines.append(f"{'Market':<30} {'Selection':<35} {'Odds':>7} {'Raw Impl%':>10} {'Vig-Adj%':>10} {'Vig':>6} {'EV/1u':>8}")
+    lines.append("-" * 110)
+
+    for mtype, entries in sorted(markets.items()):
+        # Compute raw implied probabilities
+        raw_implieds = [american_to_raw_implied(e["dk_odds"]) for e in entries]
+        total_raw = sum(raw_implieds)
+        vig_pct = (total_raw - 1.0) * 100.0 if total_raw > 0 else 0.0
+
+        for entry, raw_imp in zip(entries, raw_implieds):
+            odds = entry["dk_odds"]
+            sel  = entry["selection"]
+
+            # Vig-adjusted (fair) probability
+            vig_adj = (raw_imp / total_raw * 100.0) if total_raw > 0 else 0.0
+
+            # EV per 1 unit staked, assuming the vig-adjusted prob is the TRUE probability
+            # EV = p_true * profit - (1 - p_true) * stake
+            # At these fair odds, EV = 0 (breakeven). The AI's job is to decide if true prob > vig_adj.
+            # We show EV assuming the vig-adjusted prob *is* true (should be ~0 at fair odds).
+            dec = american_to_decimal(odds)
+            profit = dec - 1.0
+            p = vig_adj / 100.0
+            ev = round((p * profit) - ((1.0 - p) * 1.0), 3)
+
+            lines.append(
+                f"{mtype:<30} {sel:<35} {odds:>+7d} {raw_imp*100:>9.1f}% {vig_adj:>9.1f}% {vig_pct:>5.1f}% {ev:>+8.3f}u"
+            )
+        lines.append("")  # blank row between markets
+
+    return "\n".join(lines)
+
+
 def evaluate_tactical_matchups_ai(match: Match, api_key: str) -> Optional[Dict[str, Any]]:
     """
     Evaluates tactical matchups with comprehensive multi-source research:
@@ -1353,13 +2226,25 @@ def evaluate_tactical_matchups_ai(match: Match, api_key: str) -> Optional[Dict[s
             [f"- Selection: '{o['selection']}' | Market Type: '{o['market_type']}'" for o in odds_data]
         )
 
-        # --- 2. Line movement context (from sync snapshot) ---
-        line_movement_data = st.session_state.get('line_movement_data', {})
+        # --- 1b. Pre-compute implied probabilities (strips vig, gives AI clean numbers) ---
+        prob_table = compute_implied_probabilities(odds_data)
+
+        # --- 2. Line movement context (multi-sync trend) ---
+        trend_history = st.session_state.get('odds_trend_history', {})
         line_movement_str = ""
-        if line_movement_data:
-            movements = []
-            for o in odds_data:
-                key = f"{o['match_id']}|{o['market_type']}|{o['selection']}"
+        movements = []
+        for o in odds_data:
+            key = f"{o['match_id']}|{o['market_type']}|{o['selection']}"
+            history = trend_history.get(key, [])
+            if len(history) >= 2:
+                trajectory_str = " → ".join([f"{val:+d}" for val in history])
+                delta = history[-1] - history[0]
+                direction = "▲ SHARPER" if delta < 0 else "▼ LONGER"
+                movements.append(
+                    f"  {o['market_type']}: {o['selection']} trend: {trajectory_str} ({direction}, total Δ{delta:+d})"
+                )
+            else:
+                line_movement_data = st.session_state.get('line_movement_data', {})
                 old_odds = line_movement_data.get(key)
                 if old_odds is not None and old_odds != o['dk_odds']:
                     delta = o['dk_odds'] - old_odds
@@ -1367,9 +2252,9 @@ def evaluate_tactical_matchups_ai(match: Match, api_key: str) -> Optional[Dict[s
                     movements.append(
                         f"  {o['market_type']}: {o['selection']} moved {old_odds:+d} → {o['dk_odds']:+d} ({direction}, Δ{delta:+d})"
                     )
-            if movements:
-                line_movement_str = "\n".join(movements)
-                print(f"[DEBUG] Detected {len(movements)} line movement(s) for {match.match_id}")
+        if movements:
+            line_movement_str = "\n".join(movements)
+            print(f"[DEBUG] Detected line movement(s) for {match.match_id}:\n{line_movement_str}")
 
         # --- 3. Venue weather context ---
         match_date_str = match.kickoff_time.strftime("%Y-%m-%d")
@@ -1378,9 +2263,17 @@ def evaluate_tactical_matchups_ai(match: Match, api_key: str) -> Optional[Dict[s
         weather_str = get_weather_context(venue_city, match_date_str) if venue_city else ""
         print(f"[DEBUG] Weather context for {match.match_id}: {weather_str[:80] if weather_str else 'N/A'}")
 
-        # --- 4. Form, H2H, xG, referee context ---
+        # --- 4. Form, H2H, xG, referee context (DDG fallback) ---
         print(f"[DEBUG] Fetching form/H2H/xG/referee context for {match.home_team} vs {match.away_team}...")
         extended_research = get_form_and_h2h_context(match.home_team, match.away_team)
+
+        # --- 4b. API-Football structured data (real stats — higher priority than DDG snippets) ---
+        print(f"[DEBUG] Fetching API-Football structured data for {match.home_team} vs {match.away_team}...")
+        api_football_context = get_api_football_context(match.home_team, match.away_team)
+        if api_football_context:
+            print(f"[DEBUG] API-Football returned {len(api_football_context)} chars of structured data.")
+        else:
+            print(f"[DEBUG] API-Football returned no data (key missing or teams not found).")
 
         # --- 5. General match news (DDG/Yahoo) ---
         raw_research = ""
@@ -1413,6 +2306,15 @@ def evaluate_tactical_matchups_ai(match: Match, api_key: str) -> Optional[Dict[s
             except Exception as yahoo_err:
                 print(f"[DEBUG] Yahoo News fallback failed: {yahoo_err}")
 
+        # Compress news & research before sending to AI
+        compressed_news = compress_and_structure_news(raw_research)
+        if not compressed_news.strip() and raw_research.strip():
+            compressed_news = "\n".join([f"• {line.strip()}" for line in raw_research.split("\n") if line.strip()][:5])
+
+        compressed_extended = compress_and_structure_news(extended_research)
+        if not compressed_extended.strip() and extended_research.strip():
+            compressed_extended = "\n".join([f"• {line.strip()}" for line in extended_research.split("\n") if line.strip()][:8])
+
         # --- 6. Build structured prompt ---
         prompt = f"""
 You are an elite sports betting analyst, oddsmaker, and tactical football expert.
@@ -1421,10 +2323,17 @@ For EVERY recommendation, explicitly cite which section(s) of data most influenc
 All bet types are on the table: Moneyline, BTTS, Total Goals, Spread, Corners, Anytime Goalscorer, Player Shots, Player Shots on Target, Promo/Boost, SGP.
 
 ══════════════════════════════════════════
-[SECTION 1: LIVE ODDS & LINE MOVEMENT]
+[SECTION 1: LIVE ODDS, IMPLIED PROBABILITIES & LINE MOVEMENT]
 ══════════════════════════════════════════
-Current DraftKings Odds:
-{json.dumps(odds_data, indent=2)}
+PRE-COMPUTED MARKET PROBABILITIES (vig already stripped — use these directly):
+Columns: Market | Selection | DK Odds | Raw Implied% | Vig-Adjusted% | Book Vig% | Breakeven EV/1u
+
+HOW TO USE: Your job is to estimate whether the TRUE win probability for a selection
+exceeds its Vig-Adjusted% figure. If your estimate is higher, there is positive expected value (EV).
+EV formula: EV = (your_true_prob × potential_profit) − ((1 − your_true_prob) × 1u stake)
+Only recommend selections where you assess TRUE probability > Vig-Adjusted%.
+
+{prob_table}
 
 Line Movement Since Last Sync (sharp money indicator):
 {line_movement_str if line_movement_str else "No prior snapshot available (first sync or no change)."}
@@ -1437,14 +2346,25 @@ NOTE: Lines moving shorter (more negative) WITHOUT proportional public volume = 
 {match.away_team}: {", ".join(match.away_lineup) if match.away_lineup else 'Not yet confirmed'}
 
 ══════════════════════════════════════════
-[SECTION 3: TEAM FORM, H2H HISTORY, xG & REFEREE]
+[SECTION 3: STRUCTURED STATS — API-Football (REAL DATA — PRIORITISE THIS)]
 ══════════════════════════════════════════
-{extended_research if extended_research else 'No extended research data retrieved.'}
+This section contains verified factual data pulled directly from the API-Football database.
+Use it as the primary source for team form, H2H history, group standings, and confirmed lineups.
+Do NOT override this data with assumptions from other sections.
+
+{api_football_context if api_football_context else 'API-Football data unavailable for this match (key not set or teams not found).'}
 
 ══════════════════════════════════════════
-[SECTION 4: MATCH NEWS & INJURY INTEL]
+[SECTION 4: SUPPLEMENTAL FORM, H2H & xG — WEB SEARCH SNIPPETS]
 ══════════════════════════════════════════
-{raw_research if raw_research else 'No match news retrieved — use your knowledge base.'}
+Use these web search snippets to supplement Section 3 (e.g. for xG, pressing stats, referee data not available from API-Football).
+If Section 3 contradicts these snippets, trust Section 3.
+{compressed_extended if compressed_extended else 'No extended research data retrieved.'}
+
+══════════════════════════════════════════
+[SECTION 5: MATCH NEWS & INJURY INTEL]
+══════════════════════════════════════════
+{compressed_news if compressed_news else 'No match news retrieved — use your knowledge base.'}
 
 ══════════════════════════════════════════
 [SECTION 5: VENUE & WEATHER CONDITIONS]
@@ -1468,19 +2388,24 @@ ANALYSIS TASKS:
 6. Weather impact: If Section 5 shows adverse conditions (wind, rain), adjust corners/totals recommendations accordingly.
 7. Line movement: If any line moved sharper (Section 1), presume sharp action — consider fading public or following the sharp side.
 8. Referee tendency: If referee data suggests high card rates, note potential impact on bookings markets.
-9. Tactical style clash (NEW): Using Sections 3, 4, and your own knowledge, explicitly analyze the style matchup:
+9. Tactical style clash: Using Sections 3, 4, and your own knowledge, explicitly analyze the style matchup:
    - What formation/system does each team use?
    - Is one team a high-press side facing a slow-buildup team? A possession side facing a low-block?
    - Which team's style exploits the other's known weakness?
    - Does this style clash favor high or low total goals? More or fewer corners? More or fewer cards?
    - Use this style analysis to refine ALL your Total Goals, BTTS, Corners, and Spread recommendations.
-10. Fair value: For each recommended selection, estimate your calculated "true odds" using all above data.
+10. Fair value assessment: For EACH selection you consider recommending:
+    a. State your estimated TRUE win probability as a percentage.
+    b. Compare it to the Vig-Adjusted% from Section 1.
+    c. Calculate EV = (true_prob × potential_profit) − ((1 − true_prob) × 1.0u)
+    d. Only recommend if EV > 0 (true_prob > Vig-Adjusted%).
+    e. Set edge_pct = true_prob − Vig-Adjusted% (e.g. if you assess 58% true vs 51.2% vig-adj, edge_pct = 6.8)
 11. Recommend ALL positive-EV selections. For Promo/Boost, compare boosted odds vs your true odds.
 12. If 2+ value picks exist, evaluate whether combining them into an SGP makes betting sense:
-    - Only construct an SGP if the legs have a strong positive correlation (e.g. Under 2.5 and Underdog Spread) such that the parlay offers a correlation edge (i.e. winning one leg significantly increases the probability of winning the other).
-    - Do NOT construct an SGP if the picks are uncorrelated (e.g. an anytime goalscorer from team A and under corners), negatively correlated, or simply stack redundant risk on the same game script without a clear mathematical correlation advantage.
-    - The rationale for the SGP MUST explain the correlation dynamics and why doubling down in a parlay makes betting sense for this specific matchup.
-13. Conviction level: "High" (multiple confirming signals from different sections), "Medium" (1-2 signals), "Low" (single signal or borderline).
+    - Only construct an SGP if the legs have a strong positive correlation (e.g. Under 2.5 and Underdog Spread) such that the parlay offers a correlation edge.
+    - Do NOT construct an SGP if the picks are uncorrelated, negatively correlated, or redundant.
+    - The rationale for the SGP MUST explain the correlation dynamics.
+13. Conviction level: "High" (multiple confirming signals + edge_pct > 5%), "Medium" (1-2 signals or edge_pct 2-5%), "Low" (single signal or edge_pct < 2%).
 14. For each pick, populate `"research_summary"` with 2-3 bullet points citing the SPECIFIC data that drove the recommendation.
 
 Return ONLY a valid JSON object matching this schema:
@@ -1503,6 +2428,10 @@ Return ONLY a valid JSON object matching this schema:
       "selection": "exact selection string from valid options",
       "market_type": "exact market_type from valid options OR 'SGP'",
       "true_odds": integer,
+      "true_prob_pct": number,
+      "vig_adj_pct": number,
+      "edge_pct": number,
+      "ev_per_unit": number,
       "rationale": "2-3 sentence explanation citing specific data sections",
       "conviction": "High|Medium|Low",
       "research_summary": ["data-backed bullet 1", "data-backed bullet 2"],
@@ -1604,6 +2533,10 @@ If no value exists anywhere, return `"recommendations": []`.
                     leg_odds_list.append(leg_match_odds["dk_odds"])
                     
                 if not valid_sgp:
+                    continue
+                    
+                if not validate_sgp_legs(validated_legs):
+                    print(f"[DEBUG] SGP failed correlation validation. Skipping recommendation.")
                     continue
                     
                 base_odds = rec.get("base_odds")
@@ -1821,7 +2754,7 @@ def determine_settlement_status(slip: LedgerEntry, match: Match, final_score_str
                 direction = match_tg.group(1).lower()
                 threshold = float(match_tg.group(2))
                 total_goals = home_score + away_score
-                
+
                 if direction == "over":
                     if total_goals > threshold: return LedgerStatus.WON
                     elif total_goals < threshold: return LedgerStatus.LOST
@@ -1831,11 +2764,32 @@ def determine_settlement_status(slip: LedgerEntry, match: Match, final_score_str
                     elif total_goals > threshold: return LedgerStatus.LOST
                     else: return LedgerStatus.VOID
 
+        elif slip.market_type == "Corners":
+            # Corner totals cannot be auto-settled from the scoreline alone.
+            # Mark as Void (stake returned) so they don't remain Pending forever;
+            # the user can manually override in the ledger if they have the stat.
+            return LedgerStatus.VOID
+
+        elif slip.market_type == "Anytime Goalscorer":
+            # Individual goalscorer data is not parsed from the Wikipedia scoreline.
+            # Mark as Void so the entry is cleared; user can manually override.
+            return LedgerStatus.VOID
+
+        elif slip.market_type in ("Player Shots", "Player Shots on Target"):
+            # Individual player shot stats are not available from the scoreline.
+            # Mark as Void so the entry is cleared; user can manually override.
+            return LedgerStatus.VOID
+
+        elif slip.market_type == "Promo/Boost":
+            # Promo/Boost bets are unique offers that depend on the underlying market.
+            # Mark as Void so the entry is cleared; user can manually override.
+            return LedgerStatus.VOID
+
     except (ValueError, IndexError):
         # If score is malformed, cannot determine status
         return LedgerStatus.PENDING
 
-    return LedgerStatus.PENDING # Default to pending if no logic matches
+    return LedgerStatus.PENDING  # Default to pending if no logic matches
 
 
 def audit_pending_ledger(api_key: str) -> None:
@@ -1932,7 +2886,7 @@ def execute_sync_pipeline():
     with st.status("Executing sync pipeline...", expanded=True) as status:
         try:
             api_key = st.session_state.get("gemini_api_key") or os.environ.get("GEMINI_API_KEY")
-            
+
             # Step 0: Audit ledger first (as per rules)
             status.update(label="Auditing pending ledger entries...")
             audit_pending_ledger(api_key)
@@ -1948,15 +2902,29 @@ def execute_sync_pipeline():
             matches_response = supabase.table("matches").select("*").execute()
             all_matches = [Match.model_validate(m) for m in matches_response.data]
             all_matches.sort(key=lambda m: m.kickoff_time)
-
             st.session_state.all_matches = all_matches
-            
+
+            # Step 2b: Fetch lineups for TODAY's matches only
+            today_matches = [
+                m for m in all_matches
+                if m.kickoff_time.date() == date.today()
+                or (m.kickoff_time.date() == date.today())
+            ]
+            if today_matches and target_date == date.today():
+                status.update(label=f"Fetching lineups for {len(today_matches)} today's match(es)...")
+                st.write("**⚽ Lineup Discovery (Today's Matches Only)**")
+                fetch_and_store_lineups_for_today(all_matches, api_key)
+            elif target_date != date.today():
+                st.info(f"ℹ️ Lineup lookup skipped — only runs for today's games (selected date: {target_date}).")
+
             # Reset conviction picks so user can run fresh research on newly synced matches
             st.session_state.conviction_picks = {}
 
             status.update(label="Sync complete. Ready to render UI.", state="complete")
         except Exception as e:
             status.update(label=f"Pipeline failed: {e}", state="error")
+
+
 
 
 # --- 5. USER INTERFACE (Mobile-First Streamlit Components) ---
@@ -2144,6 +3112,13 @@ def render_main_dashboard():
             help="Select the date of World Cup matches you want to view or sync."
         )
 
+        st.checkbox(
+            "Bypass Sync Cache (Force Refresh)",
+            value=False,
+            key="bypass_sync_cache",
+            help="Check this to force the pipeline to fetch fresh odds and details from external APIs rather than using cached entries."
+        )
+
 
     # --- Main Sync Trigger ---
     st.button(
@@ -2209,8 +3184,16 @@ def render_main_dashboard():
                 # Wrap each match card in a clean container
                 with st.container(border=True):
                     st.markdown(f"⚽ **{match.home_team} vs {match.away_team}**")
-                    st.caption(f"Kickoff: {match.kickoff_time.strftime('%Y-%m-%d %H:%M UTC')} | Status: {match.lineup_status}")
-                    
+                    _ct, _ct_label = to_central_time(match.kickoff_time)
+                    # Lineup source badge
+                    if match.lineup_status == LineupStatus.CONFIRMED and len(match.home_lineup) >= 11:
+                        _lineup_badge = "🟢 Confirmed Lineup"
+                    elif match.home_lineup:
+                        _lineup_badge = "🔵 AI Projected Lineup"
+                    else:
+                        _lineup_badge = "⚪ No Lineup Yet"
+                    st.caption(f"Kickoff: {_ct.strftime('%a %b %d, %I:%M %p')} {_ct_label} | {_lineup_badge}")
+
                     # Collapsible Sandbox editor for tactical lineups and odds
                     with st.expander("🛠️ Match Sandbox (Roster & Odds Editor)", expanded=False):
                         col_status, col_gen = st.columns([1, 1])
@@ -2223,7 +3206,7 @@ def render_main_dashboard():
                             )
                         with col_gen:
                             st.write("") # vertical offset
-                            if st.button("🪄 Auto-Generate Lineup via AI", key=f"gen_lineup_{match_id}", use_container_width=True):
+                            if st.button("🔵 Generate AI Projected Lineup", key=f"gen_lineup_{match_id}", use_container_width=True):
                                 if not api_key:
                                     st.error("Please enter your Gemini API Key in the sidebar.")
                                 else:
@@ -2413,24 +3396,37 @@ def render_main_dashboard():
 
     # --- Ledger Display ---
     st.subheader("Selection Ledger")
+    # Prop bet types that require manual settlement
+    _MANUAL_SETTLE_TYPES = {"Corners", "Anytime Goalscorer", "Player Shots", "Player Shots on Target", "Promo/Boost"}
     try:
         ledger_response = supabase.table("ledger").select("*").order("created_at", desc=True).limit(20).execute()
         ledger_entries = [LedgerEntry.model_validate(e) for e in ledger_response.data]
-        
+
         if not ledger_entries:
             st.info("Ledger is empty.")
         else:
+            has_pending_props = any(
+                e.status == LedgerStatus.PENDING and e.market_type in _MANUAL_SETTLE_TYPES
+                for e in ledger_entries
+            )
+            if has_pending_props:
+                st.caption(
+                    "⚠️ **Prop bets** (Corners, Anytime Goalscorer, Shots) cannot be auto-settled from the scoreline. "
+                    "Use the **Won / Lost / Void** buttons below to manually settle them. "
+                    "Running the sync pipeline will also automatically void any unsettled props once a final score is recorded."
+                )
+
             for entry in ledger_entries:
                 color = "grey"
                 if entry.status == LedgerStatus.WON: color = "green"
                 elif entry.status == LedgerStatus.LOST: color = "red"
-                
+                elif entry.status == LedgerStatus.VOID: color = "orange"
+
                 with st.container(border=True):
                     col1, col2 = st.columns([3, 1])
                     with col1:
                         if entry.market_type == "SGP":
                             try:
-                                import json
                                 parlay_data = json.loads(entry.selection)
                                 legs_desc = " + ".join([f"{leg['selection']} ({leg['base_odds']})" for leg in parlay_data.get("legs", [])])
                                 st.markdown(f"**SGP:** {legs_desc} ({entry.base_odds})")
@@ -2438,11 +3434,44 @@ def render_main_dashboard():
                                 st.markdown(f"**{entry.selection}** ({entry.base_odds})")
                         else:
                             st.markdown(f"**{entry.selection}** ({entry.base_odds})")
-                        st.caption(f"Match ID: {entry.match_id}")
+                        st.caption(f"`{entry.market_type}` · Match: {entry.match_id}")
                     with col2:
                         st.markdown(f"**:{color}[{entry.status.upper()}]**")
                         ret = f"{entry.net_return:+.2f}" if entry.net_return is not None else "N/A"
                         st.metric("Net", f"{ret}u", delta_color="off")
+
+                    # Manual settle controls for pending entries
+                    if entry.status == LedgerStatus.PENDING:
+                        mc1, mc2, mc3 = st.columns(3)
+                        slip_id = entry.slip_id
+                        base_odds = entry.base_odds
+                        unit_risk = entry.unit_risk
+
+                        def _manual_settle(sid=slip_id, outcome=LedgerStatus.WON, odds=base_odds, risk=unit_risk):
+                            if outcome == LedgerStatus.WON:
+                                if odds > 0:
+                                    nr = round(risk * (odds / 100.0), 2)
+                                else:
+                                    nr = round(risk * (100.0 / abs(odds)), 2)
+                            elif outcome == LedgerStatus.LOST:
+                                nr = round(-risk, 2)
+                            else:
+                                nr = 0.0
+                            supabase.table("ledger").update({
+                                "status": outcome.value,
+                                "net_return": nr
+                            }).eq("slip_id", sid).execute()
+                            st.rerun()
+
+                        with mc1:
+                            if st.button("✅ Won", key=f"manual_won_{slip_id}", use_container_width=True):
+                                _manual_settle(sid=slip_id, outcome=LedgerStatus.WON, odds=base_odds, risk=unit_risk)
+                        with mc2:
+                            if st.button("❌ Lost", key=f"manual_lost_{slip_id}", use_container_width=True):
+                                _manual_settle(sid=slip_id, outcome=LedgerStatus.LOST, odds=base_odds, risk=unit_risk)
+                        with mc3:
+                            if st.button("↩️ Void", key=f"manual_void_{slip_id}", use_container_width=True):
+                                _manual_settle(sid=slip_id, outcome=LedgerStatus.VOID, odds=base_odds, risk=unit_risk)
 
     except Exception as e:
         st.error(f"Could not load ledger: {e}")
@@ -2539,17 +3568,27 @@ def render_conviction_card(pick: Dict[str, Any]):
         kelly_pct = 0.0
         suggested_units = 1.0
         edge_pct = 0.0
+
+        # Prefer the AI-computed edge fields (more accurate — based on vig-adjusted probs)
+        ai_edge_pct     = pick.get("edge_pct")       # AI: true_prob - vig_adj_pct
+        ai_ev_per_unit  = pick.get("ev_per_unit")    # AI: EV at 1 unit stake
+        ai_true_prob    = pick.get("true_prob_pct")  # AI: estimated win probability
+        ai_vig_adj      = pick.get("vig_adj_pct")    # AI: vig-stripped fair probability
+
         if base_odds is not None and true_odds is not None:
             kelly_pct = calculate_kelly_fraction(base_odds, true_odds)
             if kelly_pct > 0.0:
                 suggested_units = round((kelly_pct / 2.0) * 4) / 4.0
                 suggested_units = max(0.25, min(suggested_units, 5.0))
-                
-            # Implied win probabilities to calculate Value Edge
-            base_prob = 100.0 / (base_odds + 100.0) if base_odds > 0 else abs(base_odds) / (abs(base_odds) + 100.0)
-            true_prob = 100.0 / (true_odds + 100.0) if true_odds > 0 else abs(true_odds) / (abs(true_odds) + 100.0)
-            edge_pct = max(0.0, (true_prob - base_prob) * 100.0)
-            
+
+            if ai_edge_pct is not None:
+                edge_pct = float(ai_edge_pct)
+            else:
+                # Fallback: compute client-side from raw odds if AI didn't return edge fields
+                base_prob = 100.0 / (base_odds + 100.0) if base_odds > 0 else abs(base_odds) / (abs(base_odds) + 100.0)
+                true_prob = 100.0 / (true_odds + 100.0) if true_odds > 0 else abs(true_odds) / (abs(true_odds) + 100.0)
+                edge_pct = max(0.0, (true_prob - base_prob) * 100.0)
+
         # --- AI Confidence Score Meter ---
         edge_boost = min(edge_pct * 1.2, 22.0)  # edge contributes up to 22 pts
         confidence_score = min(100, max(0, round(base_conf + edge_boost)))
@@ -2578,6 +3617,16 @@ def render_conviction_card(pick: Dict[str, Any]):
         with col_badge:
             edge_str = f" | Edge: :green[+{edge_pct:.1f}%]" if edge_pct > 0.0 else ""
             st.markdown(f"**Actionable Advice:** :{badge_color}[{advice}]{edge_str}")
+
+            # Show probability breakdown if AI returned the new fields
+            if ai_true_prob is not None and ai_vig_adj is not None:
+                ev_str = f" | EV: :green[+{ai_ev_per_unit:.3f}u]" if ai_ev_per_unit and ai_ev_per_unit > 0 else (
+                    f" | EV: :red[{ai_ev_per_unit:.3f}u]" if ai_ev_per_unit else ""
+                )
+                st.caption(
+                    f"True prob: **{ai_true_prob:.1f}%** vs Vig-adj: {ai_vig_adj:.1f}% "
+                    f"(Edge: +{edge_pct:.1f}%){ev_str}"
+                )
         with col_kelly:
             if kelly_pct > 0.0:
                 st.markdown(f"**Suggested Stake (Half-Kelly):** :green[{kelly_pct}% ({suggested_units}u)]")
