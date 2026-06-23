@@ -1782,6 +1782,24 @@ def _trunc(text: str, max_chars: int = 400) -> str:
     return text[:max_chars] + "..." if len(text) > max_chars else text
 
 
+def parse_american_odds(price) -> int:
+    """Parses american odds from Bovada/Odds API, handling 'EVEN' and string inputs safely."""
+    if price is None:
+        return 0
+    if isinstance(price, str):
+        p_str = price.strip().upper()
+        if p_str in ("EVEN", "EVS", "EV"):
+            return 100
+        try:
+            return int(p_str)
+        except Exception:
+            return 0
+    try:
+        return int(price)
+    except Exception:
+        return 0
+
+
 def clean_name(name: str) -> str:
     """Normalizes team names for fuzzy matching."""
     # Convert to lowercase
@@ -1958,8 +1976,14 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                     relevant_games = []
                     for game in api_data:
                         commence_time = game.get("commence_time", "")
-                        if commence_time.startswith(target_date_iso):
-                            relevant_games.append(game)
+                        if commence_time:
+                            try:
+                                dt_utc = datetime.fromisoformat(commence_time.replace("Z", "+00:00"))
+                                dt_central, _ = to_central_time(dt_utc)
+                                if dt_central.date().isoformat() == target_date_iso:
+                                    relevant_games.append(game)
+                            except Exception as parse_err:
+                                print(f"[DEBUG] Error parsing commence_time {commence_time}: {parse_err}")
                     
                     if relevant_games:
                         consolidated_games = []
@@ -2366,7 +2390,7 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                                     "match_id": match_id,
                                     "market_type": "Moneyline",
                                     "selection": sel_name,
-                                    "dk_odds": int(price)
+                                    "dk_odds": parse_american_odds(price)
                                 })
                         
                         # BTTS
@@ -2379,7 +2403,7 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                                     "match_id": match_id,
                                     "market_type": "BTTS",
                                     "selection": sel_name,
-                                    "dk_odds": int(price)
+                                    "dk_odds": parse_american_odds(price)
                                 })
                                 
                         # Total Goals
@@ -2392,7 +2416,7 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                                     "match_id": match_id,
                                     "market_type": "Total Goals",
                                     "selection": sel_name,
-                                    "dk_odds": int(price)
+                                    "dk_odds": parse_american_odds(price)
                                 })
                                 
                         # Spread
@@ -2405,7 +2429,7 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                                     "match_id": match_id,
                                     "market_type": "Spread",
                                     "selection": sel_name,
-                                    "dk_odds": int(price)
+                                    "dk_odds": parse_american_odds(price)
                                 })
                                 
                         # Corners
@@ -2418,7 +2442,7 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                                     "match_id": match_id,
                                     "market_type": "Corners",
                                     "selection": sel_name,
-                                    "dk_odds": int(price)
+                                    "dk_odds": parse_american_odds(price)
                                 })
                                 
                         # Anytime Goalscorer
@@ -2431,7 +2455,7 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                                     "match_id": match_id,
                                     "market_type": "Anytime Goalscorer",
                                     "selection": f"{p_name} to Score",
-                                    "dk_odds": int(price)
+                                    "dk_odds": parse_american_odds(price)
                                 })
                                 
                         # Player Shots
@@ -2445,7 +2469,7 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                                         "match_id": match_id,
                                         "market_type": "Player Shots",
                                         "selection": f"{p_name} {sel_name}",
-                                        "dk_odds": int(price)
+                                        "dk_odds": parse_american_odds(price)
                                     })
                                     
                         # Player Shots on Target
@@ -2459,7 +2483,7 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                                         "match_id": match_id,
                                         "market_type": "Player Shots on Target",
                                         "selection": f"{p_name} {sel_name}",
-                                        "dk_odds": int(price)
+                                        "dk_odds": parse_american_odds(price)
                                     })
                                     
                         # Player Tackles
@@ -2473,7 +2497,7 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                                         "match_id": match_id,
                                         "market_type": "Player Tackles",
                                         "selection": f"{p_name} {sel_name}",
-                                        "dk_odds": int(price)
+                                        "dk_odds": parse_american_odds(price)
                                     })
                                     
                         # Total Cards
@@ -2486,7 +2510,7 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                                     "match_id": match_id,
                                     "market_type": "Total Cards",
                                     "selection": sel_name,
-                                    "dk_odds": int(price)
+                                    "dk_odds": parse_american_odds(price)
                                 })
                                 
                         # Double Chance
@@ -2499,7 +2523,7 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                                     "match_id": match_id,
                                     "market_type": "Double Chance",
                                     "selection": sel_name,
-                                    "dk_odds": int(price)
+                                    "dk_odds": parse_american_odds(price)
                                 })
                                 
                         # Draw No Bet
@@ -2512,7 +2536,7 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                                     "match_id": match_id,
                                     "market_type": "Draw No Bet",
                                     "selection": sel_name,
-                                    "dk_odds": int(price)
+                                    "dk_odds": parse_american_odds(price)
                                 })
                     
                     # 2. Add fallback Moneyline from The Odds API if Bovada moneyline wasn't found
@@ -2531,7 +2555,7 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                                                 "match_id": match_id,
                                                 "market_type": "Moneyline",
                                                 "selection": out.get("name"),
-                                                "dk_odds": int(out.get("price"))
+                                                "dk_odds": parse_american_odds(out.get("price"))
                                             })
                             except Exception:
                                 pass
@@ -2544,6 +2568,7 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
 
         # Fall back to Gemini API only if programmatic mapping didn't produce odds
         if not programmatic_success:
+            target_matches_data = day_matches
             print("[DEBUG] Running Gemini model for fallback odds simulation...")
             prompt = f"""
 Based on the following actual World Cup 2026 matches scheduled for {target_date_str}:
@@ -2739,6 +2764,24 @@ Guidelines:
                 away_lineup=m.get("away_lineup", [])
             )
             valid_matches.append(match_obj)
+
+        # Deduplicate matches and odds before upserting to avoid 'ON CONFLICT DO UPDATE command cannot affect row a second time'
+        seen_match_ids = set()
+        deduped_matches = []
+        for m in valid_matches:
+            if m.match_id not in seen_match_ids:
+                seen_match_ids.add(m.match_id)
+                deduped_matches.append(m)
+        valid_matches = deduped_matches
+
+        seen_odds_keys = set()
+        deduped_odds = []
+        for o in discovered_odds:
+            key = (o["match_id"], o["market_type"], o["selection"])
+            if key not in seen_odds_keys:
+                seen_odds_keys.add(key)
+                deduped_odds.append(o)
+        discovered_odds = deduped_odds
 
         if valid_matches:
             supabase.table("matches").upsert([m.model_dump(mode='json', exclude={'updated_at'}) for m in valid_matches]).execute()
@@ -4289,7 +4332,8 @@ def render_main_dashboard():
 
         st.markdown("---")
         st.subheader("Match Date Filter")
-        default_date = date.today()
+        now_central, _ = to_central_time(datetime.now(timezone.utc))
+        default_date = now_central.date()
         target_date = st.date_input(
             "View / Sync Date",
             value=default_date,
