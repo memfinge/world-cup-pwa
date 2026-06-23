@@ -2932,6 +2932,63 @@ def compute_implied_probabilities(odds_data: list) -> str:
     return "\n".join(lines)
 
 
+SQUAD_MARKET_VALUES = {
+    "england": "€1.52B",
+    "france": "€1.23B",
+    "portugal": "€1.05B",
+    "brazil": "€1.04B",
+    "spain": "€1.01B",
+    "germany": "€850M",
+    "argentina": "€805M",
+    "italy": "€705M",
+    "netherlands": "€645M",
+    "belgium": "€550M",
+    "uruguay": "€480M",
+    "croatia": "€360M",
+    "usa": "€345M",
+    "unitedstates": "€345M",
+    "colombia": "€320M",
+    "morocco": "€320M",
+    "senegal": "€310M",
+    "denmark": "€310M",
+    "ukraine": "€300M",
+    "turkey": "€300M",
+    "switzerland": "€280M",
+    "japan": "€250M",
+    "serbia": "€230M",
+    "austria": "€230M",
+    "sweden": "€220M",
+    "poland": "€210M",
+    "nigeria": "€200M",
+    "ecuador": "€200M",
+    "southkorea": "€170M",
+    "scotland": "€150M",
+    "wales": "€140M",
+    "canada": "€140M",
+    "mexico": "€140M",
+    "ghana": "€120M",
+    "algeria": "€110M",
+    "tunisia": "€100M",
+    "cameroon": "€90M",
+    "australia": "€80M",
+    "paraguay": "€80M",
+    "chile": "€75M",
+    "peru": "€70M",
+    "egypt": "€65M",
+    "saudiarabia": "€35M",
+    "costarica": "€30M",
+    "qatar": "€20M",
+}
+
+
+def get_squad_market_value(team_name: str) -> str:
+    cleaned = clean_name(team_name)
+    for key, val in SQUAD_MARKET_VALUES.items():
+        if key in cleaned or cleaned in key:
+            return val
+    return "Unknown/Lower Tier (Est. < €15M)"
+
+
 def evaluate_tactical_matchups_ai(
     match: Match,
     api_key: str,
@@ -3045,6 +3102,10 @@ def evaluate_tactical_matchups_ai(
         if not compressed_extended.strip() and extended_research.strip():
             compressed_extended = "\n".join([f"• {line.strip()}" for line in extended_research.split("\n") if line.strip()][:8])
 
+        # Get squad values
+        home_val_str = get_squad_market_value(match.home_team)
+        away_val_str = get_squad_market_value(match.away_team)
+
         # --- 6. Build structured prompt ---
         prompt = f"""
 You are an elite sports betting analyst, oddsmaker, and tactical football expert.
@@ -3089,6 +3150,13 @@ Do NOT override this data with assumptions from other sections.
 ══════════════════════════════════════════
 Use these verified squad-level metrics from FBRef (shots, shots on target, xG, xGA, etc.) to analyze tactical efficiency:
 {fbref_context}
+
+══════════════════════════════════════════
+[SECTION 3c: SQUAD VALUES & ROSTER QUALITY BASES]
+══════════════════════════════════════════
+Roster value acts as a reliable proxy for roster depth and top-tier player quality:
+- {match.home_team} Squad Estimated Valuation: {home_val_str}
+- {match.away_team} Squad Estimated Valuation: {away_val_str}
 
 ══════════════════════════════════════════
 [SECTION 4: SUPPLEMENTAL FORM, H2H & xG — WEB SEARCH SNIPPETS]
