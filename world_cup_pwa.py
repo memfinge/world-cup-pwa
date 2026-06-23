@@ -2989,6 +2989,39 @@ def get_squad_market_value(team_name: str) -> str:
     return "Unknown/Lower Tier (Est. < €15M)"
 
 
+def compute_advanced_ratios(fbref_home: dict, fbref_away: dict, home_team: str, away_team: str) -> str:
+    """
+    Programmatically calculates analytical ratios to prevent LLM math hallucinations.
+    """
+    def parse_float(val) -> float:
+        if val is None:
+            return 0.0
+        try:
+            return float(str(val).replace(",", "").strip())
+        except ValueError:
+            return 0.0
+
+    ratios = []
+    for team, stats in [(home_team, fbref_home), (away_team, fbref_away)]:
+        if not stats:
+            continue
+        goals = parse_float(stats.get("goals"))
+        xg = parse_float(stats.get("xg"))
+        shots = parse_float(stats.get("shots"))
+        sot = parse_float(stats.get("shots_on_target"))
+
+        xg_delta = goals - xg
+        conv_rate = (goals / shots * 100.0) if shots > 0 else 0.0
+        accuracy = (sot / shots * 100.0) if shots > 0 else 0.0
+
+        ratios.append(f"""📊 {team} Advanced Ratios:
+  • Expected Goals Delta (Goals minus xG): {xg_delta:+.2f} (Positive = finishing efficiency; Negative = underperforming creation)
+  • Shot Conversion Rate (Goals / Shots): {conv_rate:.1f}%
+  • Shot Accuracy (Shots on Target / Shots): {accuracy:.1f}%""")
+
+    return "\n\n".join(ratios) if ratios else "Advanced squad-level ratios unavailable (insufficient stats data)."
+
+
 def evaluate_tactical_matchups_ai(
     match: Match,
     api_key: str,
@@ -3106,6 +3139,9 @@ def evaluate_tactical_matchups_ai(
         home_val_str = get_squad_market_value(match.home_team)
         away_val_str = get_squad_market_value(match.away_team)
 
+        # Compute programmatically derived advanced ratios
+        advanced_ratios_str = compute_advanced_ratios(fbref_home_stats, fbref_away_stats, match.home_team, match.away_team)
+
         # --- 6. Build structured prompt ---
         prompt = f"""
 You are an elite sports betting analyst, oddsmaker, and tactical football expert.
@@ -3159,6 +3195,12 @@ Roster value acts as a reliable proxy for roster depth and top-tier player quali
 - {match.away_team} Squad Estimated Valuation: {away_val_str}
 
 ══════════════════════════════════════════
+[SECTION 3d: PROGRAMMATICALLY DERIVED ADVANCED RATIOS]
+══════════════════════════════════════════
+Pre-calculated team performance ratios to prevent math hallucinations:
+{advanced_ratios_str}
+
+══════════════════════════════════════════
 [SECTION 4: SUPPLEMENTAL FORM, H2H & xG — WEB SEARCH SNIPPETS]
 ══════════════════════════════════════════
 Use these web search snippets to supplement Section 3 (e.g. for xG, pressing stats, referee data not available from API-Football).
@@ -3182,35 +3224,56 @@ NOTE: Wind > 30km/h suppresses corners and total goals. Rain > 3mm reduces total
 {valid_options_str}
 
 ══════════════════════════════════════════
-ANALYSIS TASKS:
+[TACTICAL BETTING FRAMEWORKS]
+══════════════════════════════════════════
+1. Low-Block vs. Possession Framework:
+   - If a heavily valued team (e.g., England/France) faces a defensive low-block team (e.g., Slovenia/Qatar) in cold/wet weather, prioritize Under 2.5/3.5 goals, favorite Spread handicap, and Over on favorite Team Corners.
+2. Sharp Money Fade Framework:
+   - Check SECTION 1 Line Movements. If base odds became longer (higher price) for a favorite, but their advanced xG and shot conversion rates are elite, look for high-value favorite Moneyline entry points (fading public panic).
+
+══════════════════════════════════════════
+ANALYSIS TASKS & KELLY GUIDELINES:
 ══════════════════════════════════════════
 1. Injuries & absences: Extract from Section 3/4 or your knowledge base for both teams.
 2. Key tactical battle: Identify the single most decisive unit or player matchup.
 3. Form analysis: Use Section 3 form data. Which team has momentum? Any goal-scoring droughts?
 4. H2H patterns: Does historical record suggest a tendency (e.g., low-scoring, home team dominant)?
-5. xG/stats analysis: If underlying data shows a team scores fewer goals than expected or concedes fewer, weight this toward Total Goals/BTTS markets.
-6. Weather impact: If Section 5 shows adverse conditions (wind, rain), adjust corners/totals recommendations accordingly.
-7. Line movement: If any line moved sharper (Section 1), presume sharp action — consider fading public or following the sharp side.
-8. Referee tendency: If referee data suggests high card rates, note potential impact on bookings markets.
-9. Tactical style clash: Using Sections 3, 3b, 4, and your own knowledge, explicitly analyze the style matchup:
-   - What formation/system does each team use?
-   - Is one team a high-press side facing a slow-buildup team? A possession side facing a low-block?
-   - Which team's style exploits the other's known weakness?
-   - Does this style clash favor high or low total goals? More or fewer corners? More or fewer cards?
-   - Use this style analysis to refine ALL your Total Goals, BTTS, Corners, and Spread recommendations.
-10. Fair value assessment: For EACH selection you consider recommending:
-    a. State your estimated TRUE win probability as a percentage.
-    b. Compare it to the Vig-Adjusted% from Section 1.
-    c. Calculate EV = (true_prob × potential_profit) − ((1 − true_prob) × 1.0u)
-    d. Only recommend if EV > 0 (true_prob > Vig-Adjusted%).
-    e. Set edge_pct = true_prob − Vig-Adjusted% (e.g. if you assess 58% true vs 51.2% vig-adj, edge_pct = 6.8)
-11. Recommend ALL positive-EV selections. For Promo/Boost, compare boosted odds vs your true odds.
-12. If 2+ value picks exist, evaluate whether combining them into an SGP makes betting sense:
-    - Only construct an SGP if the legs have a strong positive correlation (e.g. Under 2.5 and Underdog Spread) such that the parlay offers a correlation edge.
-    - Do NOT construct an SGP if the picks are uncorrelated, negatively correlated, or redundant.
-    - The rationale for the SGP MUST explain the correlation dynamics.
-13. Conviction level: "High" (multiple confirming signals + edge_pct > 5%), "Medium" (1-2 signals or edge_pct 2-5%), "Low" (single signal or edge_pct < 2%).
-14. For each pick, populate `"research_summary"` with 2-3 bullet points citing the SPECIFIC data that drove the recommendation.
+5. xG/stats analysis: Compare Expected Goals Delta and Shot Conversion rates. If finishing is highly efficient vs low xG created, weight toward underperformance/regression.
+6. Weather impact: Adjust corners/totals recommendations based on wind/rain parameters.
+7. Line movement: Identify sharp action and factor line moves into true probability estimates.
+8. Referee tendency: Identify referee tendency on card rates if available.
+9. Tactical style clash: Explicitly analyze formation clashes, low-block vs possession, and press styles.
+10. Fair value & Kelly assessment: For EACH selection:
+    a. Output your estimated TRUE probability (true_prob_pct).
+    b. Edge Calculation: edge_pct = true_prob_pct - Vig-Adjusted%.
+    c. Output Kelly recommendations in `"research_summary"`. Programmatic calculation will handle final stakes.
+11. If 2+ value picks exist, evaluate whether combining them into an SGP makes betting sense (correlation edge).
+12. Populate `"research_summary"` with 2-3 bullet points citing specific sections.
+
+══════════════════════════════════════════
+GOLDEN FEW-SHOT REASONING EXAMPLE
+══════════════════════════════════════════
+Input Match: France vs Poland
+Pre-computed Vig-Adjusted probability for "France to Win": 70.0% (Odds: -250)
+True Probability Estimate: 78.0% (due to Poland missing Lewandowski, and France having +€1B squad valuation advantage).
+Edge: +8.0%
+JSON output expectation for recommendation:
+{{
+  "selection": "France",
+  "market_type": "Moneyline",
+  "true_odds": -350,
+  "true_prob_pct": 78.0,
+  "vig_adj_pct": 70.0,
+  "edge_pct": 8.0,
+  "ev_per_unit": 0.09,
+  "rationale": "France has a major depth advantage (€1.23B squad vs €210M). Polish defensive stats show high expected goals allowed (1.85 xGA/90), while France retains elite finishing efficiency (+0.45 Goals-xG).",
+  "conviction": "High",
+  "research_summary": [
+    "Section 3c: France (€1.23B) holds a €1B squad value and roster quality advantage over Poland (€210M).",
+    "Section 3d: France shows positive finishing efficiency (+0.45 Goals-xG delta) compared to Poland's negative xG differential.",
+    "Section 2: Poland's confirmed lineup misses key striker Lewandowski due to injury."
+  ]
+}}
 
 Return ONLY a valid JSON object matching this schema:
 {{
@@ -3358,7 +3421,11 @@ If no value exists anywhere, return `"recommendations": []`.
                     "research_summary": rec.get("research_summary", []),
                     "raw_research": raw_research_display,
                     "legs": validated_legs,
-                    "is_taxed": False
+                    "is_taxed": False,
+                    "edge_pct": rec.get("edge_pct"),
+                    "ev_per_unit": rec.get("ev_per_unit"),
+                    "true_prob_pct": rec.get("true_prob_pct"),
+                    "vig_adj_pct": rec.get("vig_adj_pct")
                 }
                 if validated_rec["true_odds"] is not None:
                     validated_rec["is_taxed"] = validated_rec["base_odds"] < validated_rec["true_odds"]
@@ -3386,7 +3453,11 @@ If no value exists anywhere, return `"recommendations": []`.
                     "conviction": rec.get("conviction", "Medium"),
                     "research_summary": rec.get("research_summary", []),
                     "raw_research": raw_research_display,
-                    "is_taxed": False
+                    "is_taxed": False,
+                    "edge_pct": rec.get("edge_pct"),
+                    "ev_per_unit": rec.get("ev_per_unit"),
+                    "true_prob_pct": rec.get("true_prob_pct"),
+                    "vig_adj_pct": rec.get("vig_adj_pct")
                 }
                 
                 live_odds = matching_odds["dk_odds"]
