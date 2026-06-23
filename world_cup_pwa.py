@@ -403,7 +403,8 @@ def generate_content_with_fallback(api_key: str, prompt: str, json_mode: bool = 
         try:
             print(f"[DEBUG] Attempting content generation with model: {model_name}")
             model = genai.GenerativeModel(model_name=model_name, generation_config=gen_config)
-            response = model.generate_content(prompt)
+            # Add a 30-second timeout to prevent API hangs
+            response = model.generate_content(prompt, request_options={"timeout": 30})
             if response and response.text:
                 print(f"[DEBUG] Success using model: {model_name}")
                 return response.text.strip()
@@ -795,13 +796,65 @@ def to_central_time(dt_utc: datetime) -> tuple:
         return dt_utc + timedelta(hours=-6), "CST"
 
 
-@st.cache_data(ttl=1800)
-def get_wikipedia_matches() -> List[Dict[str, Any]]:
+@st.cache_data(ttl=3600)
+def get_api_matches(target_date_iso=None) -> List[Dict[str, Any]]:
     """
-    Scrapes the 2026 World Cup page from Wikipedia, parsing all 104 matches.
-    Returns a list of dictionaries with match data.
+    Retrieves the World Cup match schedule.
+    Primary: Fetches from API-Football for clean JSON.
+    Fallback: Scrapes the 2026 World Cup page from Wikipedia if API-Football is unavailable.
     """
+    af_key = os.environ.get("API_FOOTBALL_KEY", "")
+    if af_key:
+        try:
+            print("[AF] get_api_matches: Fetching tournament schedule from API-Football...")
+            headers = {"x-apisports-key": af_key}
+            resp = requests.get(
+                f"{_AF_BASE}/fixtures",
+                headers=headers,
+                params={"league": _AF_WC_LEAGUE, "season": _AF_WC_SEASON},
+                timeout=12
+            )
+            if resp.status_code == 200:
+                fixtures = resp.json().get("response", [])
+                parsed = []
+                for fx in fixtures:
+                    f_id = fx["fixture"]["id"]
+                    kickoff_str = fx["fixture"]["date"] # ISO string format
+                    try:
+                        ktime = datetime.fromisoformat(kickoff_str.replace("Z", "+00:00"))
+                    except Exception:
+                        ktime = datetime.now(timezone.utc)
+                    
+                    venue_city = fx["fixture"]["venue"]["city"] or ""
+                    venue_name = fx["fixture"]["venue"]["name"] or ""
+                    full_venue = f"{venue_name}, {venue_city}".strip(", ")
+                    
+                    home = fx["teams"]["home"]["name"]
+                    away = fx["teams"]["away"]["name"]
+                    score_home = fx["goals"]["home"]
+                    score_away = fx["goals"]["away"]
+                    score_str = f"{score_home}-{score_away}" if (score_home is not None and score_away is not None) else ""
+                    
+                    # Convert to target date ISO based on Central Time matchday or UTC date
+                    target_iso = to_central_time(ktime)[0].date().isoformat()
+                    
+                    parsed.append({
+                        "date": target_iso,
+                        "home_team": home,
+                        "away_team": away,
+                        "kickoff_time": ktime,
+                        "score": score_str,
+                        "venue_city": full_venue
+                    })
+                if parsed:
+                    print(f"[AF] Schedule parsed: {len(parsed)} fixtures discovered.")
+                    return parsed
+        except Exception as af_err:
+            print(f"[DEBUG] API-Football tournament schedule fetch failed: {af_err}")
+
+    # --- Wikipedia Fallback Scraper ---
     import re
+    print("[Wikipedia] get_api_matches: Falling back to Wikipedia schedule parsing...")
     url = "https://en.wikipedia.org/wiki/2026_FIFA_World_Cup"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -844,7 +897,6 @@ def get_wikipedia_matches() -> List[Dict[str, Any]]:
                 
             kickoff_utc = parse_time_local_as_utc(date_str, time_raw)
 
-            # Parse venue/city if available in the football box
             venue_city = ""
             fground = box.find(class_="fground") or box.find(class_="venue")
             if fground:
@@ -864,7 +916,6 @@ def get_wikipedia_matches() -> List[Dict[str, Any]]:
         return []
 
 
-# --- WC 2026 Venue → GPS coordinates for weather lookups ---
 WC_2026_VENUES: Dict[str, tuple] = {
     "at&t stadium": ("Arlington, TX, USA", 32.747, -97.094),
     "sofi stadium": ("Inglewood, CA, USA", 33.953, -118.339),
@@ -1832,7 +1883,7 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                             # Re-populate venue_map
                             venue_map = {}
                             try:
-                                all_matches = get_wikipedia_matches()
+                                all_matches = get_api_matches()
                                 for wm in all_matches:
                                     if wm["date"] == target_date_iso:
                                         venue_map[f"{wm['home_team']}|{wm['away_team']}"] = wm.get("venue_city", "")
@@ -1843,10 +1894,10 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
             except Exception as cache_check_err:
                 print(f"[DEBUG] Error checking sync cache: {cache_check_err}")
         
-        # 1. Fetch matches from Wikipedia
-        all_matches = get_wikipedia_matches()
+        # 1. Fetch matches from API-Football (Wikipedia fallback)
+        all_matches = get_api_matches()
         if not all_matches:
-            st.error("Failed to parse match schedule from Wikipedia.")
+            st.error("Failed to parse match schedule.")
             return
             
         # 2. Filter matches for target date
@@ -1855,6 +1906,38 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
         if not day_matches:
             st.info(f"No matches scheduled for {target_date_str} on Wikipedia.")
             return
+
+        # 3. Exclude matches that have already kicked off — odds/lines are no longer actionable
+        #    and The Odds API / Bovada won't return pre-game markets for live/finished games.
+        #    Use "⚡ Settle Pending Bets" to resolve those instead.
+        now_utc = datetime.now(timezone.utc)
+        pre_game_matches = []
+        skipped_matches = []
+        for m in day_matches:
+            ko = m.get("kickoff_time_utc") or m.get("kickoff_time")
+            # kickoff_time_utc is a datetime object set by parse_time_local_as_utc
+            if isinstance(ko, datetime):
+                ko_aware = ko if ko.tzinfo else ko.replace(tzinfo=timezone.utc)
+                if ko_aware <= now_utc:
+                    skipped_matches.append(m)
+                else:
+                    pre_game_matches.append(m)
+            else:
+                # No parsed time available — include conservatively
+                pre_game_matches.append(m)
+
+        if skipped_matches:
+            skipped_names = ", ".join(f"{m['home_team']} vs {m['away_team']}" for m in skipped_matches)
+            st.info(
+                f"⏩ **{len(skipped_matches)} match(es) already started/finished — skipped from sync** "
+                f"(use ⚡ Settle Pending Bets to resolve those bets):\n\n{skipped_names}"
+            )
+
+        if not pre_game_matches:
+            st.info("All matches for this date have already kicked off. No odds to sync. Use ⚡ Settle Pending Bets.")
+            return
+
+        day_matches = pre_game_matches
 
         # 3. Pull actual odds from The Odds API if apiKey is present
         api_odds_context = ""
@@ -2001,85 +2084,14 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
             print(f"[DEBUG] Bovada request failed: {bov_err}")
 
         # Discover daily DraftKings promos and odds boosts via web search
+        # Optimized: general promo web scraping skipped during sync.
         dk_promo_snippets = ""
-        promo_query = f"DraftKings sportsbook odds boosts promotions soccer {target_date_str}"
-        try:
-            from duckduckgo_search import DDGS
-            with DDGS(timeout=3) as ddgs:
-                results_promos = list(ddgs.news(promo_query, max_results=4))
-                for r in results_promos:
-                    dk_promo_snippets += f"Title: {r.get('title')}\nSnippet: {r.get('body')}\n\n"
-        except Exception:
-            pass
-            
-        if not dk_promo_snippets or len(dk_promo_snippets.strip()) < 50:
-            try:
-                url = f"https://news.search.yahoo.com/search?p={urllib.parse.quote(promo_query)}"
-                headers = {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                }
-                resp = requests.get(url, headers=headers, timeout=4)
-                if resp.status_code == 200:
-                    soup = BeautifulSoup(resp.text, 'html.parser')
-                    items = soup.find_all("div", class_="NewsArticle")
-                    for item in items[:4]:
-                        title_tag = item.find("h4") or item.find("a")
-                        if not title_tag: continue
-                        title = title_tag.get_text().strip()
-                        snippet_tag = item.find("p") or item.find(class_="compText")
-                        snippet = snippet_tag.get_text().strip() if snippet_tag else ""
-                        dk_promo_snippets += f"Title: {title}\nSnippet: {snippet}\n\n"
-            except Exception:
-                pass
 
         # 5. Fetch odds news/betting prediction snippets from web search (RAG)
+        # Optimized: Web news scraping skipped during sync. Odds are mapped strictly from API/Bovada feeds.
         def _process_single_match(m):
             match_snippets = ""
             dk_promo_local = ""
-            sync_queries = [
-                f"{m['home_team']} vs {m['away_team']} betting odds DraftKings",
-                f"DraftKings player props shots on target {m['home_team']} vs {m['away_team']}",
-                f"DraftKings promo boost {m['home_team']} vs {m['away_team']}",
-            ]
-
-            def _fetch_sync_query(q):
-                snippets = ""
-                try:
-                    from duckduckgo_search import DDGS
-                    with DDGS(timeout=3) as ddgs:
-                        results = list(ddgs.news(q, max_results=3))
-                        for r in results:
-                            snippets += f"Title: {r.get('title')}\nSnippet: {_trunc(r.get('body', ''))}\n\n"
-                except Exception:
-                    pass
-                return q, snippets
-
-            # Inner thread pool for 3 queries of this match
-            with ThreadPoolExecutor(max_workers=3) as ex:
-                sync_futures = list(ex.map(_fetch_sync_query, sync_queries))
-
-            for sq, sq_snippets in sync_futures:
-                match_snippets += sq_snippets
-                if "promo boost" in sq:
-                    dk_promo_local += sq_snippets
-
-            # Fallback to Yahoo if all DDG searches returned nothing
-            if len(match_snippets.strip()) < 50:
-                try:
-                    query = sync_queries[0]
-                    url = f"https://news.search.yahoo.com/search?p={urllib.parse.quote(query)}"
-                    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-                    resp = requests.get(url, headers=headers, timeout=4)
-                    if resp.status_code == 200:
-                        soup = BeautifulSoup(resp.text, 'html.parser')
-                        for item in soup.find_all("div", class_="NewsArticle")[:3]:
-                            title_tag = item.find("h4") or item.find("a")
-                            if not title_tag:
-                                continue
-                            snippet_tag = item.find("p") or item.find(class_="compText")
-                            match_snippets += f"Title: {title_tag.get_text().strip()}\nSnippet: {_trunc(snippet_tag.get_text() if snippet_tag else '')}\n\n"
-                except Exception:
-                    pass
             
             # Parse Bovada data for this specific match
             bovada_match = None
@@ -2130,6 +2142,7 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                                     "player": out.get("description"),
                                     "price": out.get("price", {}).get("american")
                                 })
+                            outcomes = outcomes[:4]
                             if m_desc == "Anytime Goal Scorer":
                                 bovada_odds_summary["Anytime Goalscorer"] = outcomes
                             elif m_desc == "First Goal Scorer":
@@ -2153,6 +2166,7 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                                     "player": out.get("description"),
                                     "price": out.get("price", {}).get("american")
                                 })
+                            outcomes = outcomes[:4]
                             if m_desc == "To Assist a Goal":
                                 bovada_odds_summary["To Assist a Goal"] = outcomes
                             elif m_desc == "To Score or Assist a Goal":
@@ -2172,6 +2186,7 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                                     "selection": out.get("description"),
                                     "price": out.get("price", {}).get("american")
                                 })
+                            outcomes = outcomes[:4]
                             if m_desc.startswith("Shots on Target - "):
                                 player = m_desc.replace("Shots on Target - ", "")
                                 sot_markets[player] = outcomes
@@ -2185,13 +2200,13 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                                 player = m_desc.replace("Tackles - ", "")
                                 tackles_markets[player] = outcomes
                         if shots_markets:
-                            bovada_odds_summary["Player Shots"] = shots_markets
+                            bovada_odds_summary["Player Shots"] = dict(list(shots_markets.items())[:4])
                         if sot_markets:
-                            bovada_odds_summary["Player Shots on Target"] = sot_markets
+                            bovada_odds_summary["Player Shots on Target"] = dict(list(sot_markets.items())[:4])
                         if saves_markets:
-                            bovada_odds_summary["Player Saves"] = saves_markets
+                            bovada_odds_summary["Player Saves"] = dict(list(saves_markets.items())[:4])
                         if tackles_markets:
-                            bovada_odds_summary["Player Tackles"] = tackles_markets
+                            bovada_odds_summary["Player Tackles"] = dict(list(tackles_markets.items())[:4])
 
                     # --- Game Stats: Team-level shots / shots on target ---
                     elif dg_desc == "Game Stats":
@@ -2291,9 +2306,17 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
             return m, match_snippets, bovada_odds_summary, dk_promo_local
 
         # Execute news fetching and Bovada summaries in parallel across all matches
+        from concurrent.futures import as_completed
+        results = []
         with ThreadPoolExecutor(max_workers=min(len(day_matches), 4)) as outer_ex:
-            futures = [outer_ex.submit(_process_single_match, m) for m in day_matches]
-            results = [f.result() for f in futures]
+            futures = {outer_ex.submit(_process_single_match, m): m for m in day_matches}
+            for fut in as_completed(futures):
+                try:
+                    results.append(fut.result(timeout=15))
+                except Exception as fut_err:
+                    m_obj = futures[fut]
+                    print(f"[DEBUG] News/Bovada fetch timed out or failed for {m_obj.get('home_team')} vs {m_obj.get('away_team')}: {fut_err}")
+                    results.append((m_obj, "", {}, ""))
 
         rag_search_context = ""
         bovada_all_matches_summary = {}
@@ -2306,18 +2329,223 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
         dk_promos_context = dk_promo_snippets.strip()
 
 
-        # Prepare data for Gemini to generate match IDs and odds
-        target_matches_data = []
-        for m in day_matches:
-            target_matches_data.append({
-                "home_team": m["home_team"],
-                "away_team": m["away_team"],
-                "kickoff_time": m["kickoff_time"].isoformat()
-            })
-
-        # 5. Call Gemini to generate match IDs and odds
+        # 5. Programmatic Mapping & Fallback Odds Generation
+        discovered_matches = []
+        discovered_odds = []
         
-        prompt = f"""
+        # Try programmatic mapping first if Bovada or Odds API data is present
+        # This takes 0.01 seconds and bypasses the Gemini LLM call completely.
+        programmatic_success = False
+        if bovada_all_matches_summary or (api_odds_context and api_odds_context != "None available"):
+            try:
+                print("[DEBUG] Attempting programmatic odds mapping from live feeds...")
+                for m in day_matches:
+                    match_id = f"{m['home_team'][:3].upper()}-{m['away_team'][:3].upper()}-2026"
+                    discovered_matches.append({
+                        "match_id": match_id,
+                        "kickoff_time": m["kickoff_time"].isoformat(),
+                        "home_team": m["home_team"],
+                        "away_team": m["away_team"],
+                        "lineup_status": "Projected",
+                        "home_lineup": [],
+                        "away_lineup": []
+                    })
+                    
+                    # 1. Map odds from Bovada if present
+                    summary_key = f"{m['home_team']} vs {m['away_team']}"
+                    bov = bovada_all_matches_summary.get(summary_key, {})
+                    
+                    if bov:
+                        # Moneyline (Home, Draw, Away)
+                        ml_list = bov.get("Moneyline", [])
+                        for outcome in ml_list:
+                            sel_name = outcome.get("selection")
+                            price = outcome.get("price")
+                            if sel_name and price is not None:
+                                discovered_odds.append({
+                                    "match_id": match_id,
+                                    "market_type": "Moneyline",
+                                    "selection": sel_name,
+                                    "dk_odds": int(price)
+                                })
+                        
+                        # BTTS
+                        btts_list = bov.get("Both Teams to Score", [])
+                        for outcome in btts_list:
+                            sel_name = outcome.get("selection")
+                            price = outcome.get("price")
+                            if sel_name and price is not None:
+                                discovered_odds.append({
+                                    "match_id": match_id,
+                                    "market_type": "BTTS",
+                                    "selection": sel_name,
+                                    "dk_odds": int(price)
+                                })
+                                
+                        # Total Goals
+                        tg_list = bov.get("Total Goals", [])
+                        for outcome in tg_list:
+                            sel_name = outcome.get("selection")
+                            price = outcome.get("price")
+                            if sel_name and price is not None:
+                                discovered_odds.append({
+                                    "match_id": match_id,
+                                    "market_type": "Total Goals",
+                                    "selection": sel_name,
+                                    "dk_odds": int(price)
+                                })
+                                
+                        # Spread
+                        spread_list = bov.get("Spread", [])
+                        for outcome in spread_list:
+                            sel_name = outcome.get("selection")
+                            price = outcome.get("price")
+                            if sel_name and price is not None:
+                                discovered_odds.append({
+                                    "match_id": match_id,
+                                    "market_type": "Spread",
+                                    "selection": sel_name,
+                                    "dk_odds": int(price)
+                                })
+                                
+                        # Corners
+                        corners_list = bov.get("Corners", [])
+                        for outcome in corners_list:
+                            sel_name = outcome.get("selection")
+                            price = outcome.get("price")
+                            if sel_name and price is not None:
+                                discovered_odds.append({
+                                    "match_id": match_id,
+                                    "market_type": "Corners",
+                                    "selection": sel_name,
+                                    "dk_odds": int(price)
+                                })
+                                
+                        # Anytime Goalscorer
+                        goals_list = bov.get("Anytime Goalscorer", [])
+                        for outcome in goals_list:
+                            p_name = outcome.get("player")
+                            price = outcome.get("price")
+                            if p_name and price is not None:
+                                discovered_odds.append({
+                                    "match_id": match_id,
+                                    "market_type": "Anytime Goalscorer",
+                                    "selection": f"{p_name} to Score",
+                                    "dk_odds": int(price)
+                                })
+                                
+                        # Player Shots
+                        shots_dict = bov.get("Player Shots", {})
+                        for p_name, outcomes in shots_dict.items():
+                            for outcome in outcomes:
+                                sel_name = outcome.get("selection")
+                                price = outcome.get("price")
+                                if sel_name and price is not None:
+                                    discovered_odds.append({
+                                        "match_id": match_id,
+                                        "market_type": "Player Shots",
+                                        "selection": f"{p_name} {sel_name}",
+                                        "dk_odds": int(price)
+                                    })
+                                    
+                        # Player Shots on Target
+                        sot_dict = bov.get("Player Shots on Target", {})
+                        for p_name, outcomes in sot_dict.items():
+                            for outcome in outcomes:
+                                sel_name = outcome.get("selection")
+                                price = outcome.get("price")
+                                if sel_name and price is not None:
+                                    discovered_odds.append({
+                                        "match_id": match_id,
+                                        "market_type": "Player Shots on Target",
+                                        "selection": f"{p_name} {sel_name}",
+                                        "dk_odds": int(price)
+                                    })
+                                    
+                        # Player Tackles
+                        tackles_dict = bov.get("Player Tackles", {})
+                        for p_name, outcomes in tackles_dict.items():
+                            for outcome in outcomes:
+                                sel_name = outcome.get("selection")
+                                price = outcome.get("price")
+                                if sel_name and price is not None:
+                                    discovered_odds.append({
+                                        "match_id": match_id,
+                                        "market_type": "Player Tackles",
+                                        "selection": f"{p_name} {sel_name}",
+                                        "dk_odds": int(price)
+                                    })
+                                    
+                        # Total Cards
+                        cards_list = bov.get("Total Cards", [])
+                        for outcome in cards_list:
+                            sel_name = outcome.get("selection")
+                            price = outcome.get("price")
+                            if sel_name and price is not None:
+                                discovered_odds.append({
+                                    "match_id": match_id,
+                                    "market_type": "Total Cards",
+                                    "selection": sel_name,
+                                    "dk_odds": int(price)
+                                })
+                                
+                        # Double Chance
+                        dc_list = bov.get("Double Chance", [])
+                        for outcome in dc_list:
+                            sel_name = outcome.get("selection")
+                            price = outcome.get("price")
+                            if sel_name and price is not None:
+                                discovered_odds.append({
+                                    "match_id": match_id,
+                                    "market_type": "Double Chance",
+                                    "selection": sel_name,
+                                    "dk_odds": int(price)
+                                })
+                                
+                        # Draw No Bet
+                        dnb_list = bov.get("Draw No Bet", [])
+                        for outcome in dnb_list:
+                            sel_name = outcome.get("selection")
+                            price = outcome.get("price")
+                            if sel_name and price is not None:
+                                discovered_odds.append({
+                                    "match_id": match_id,
+                                    "market_type": "Draw No Bet",
+                                    "selection": sel_name,
+                                    "dk_odds": int(price)
+                                })
+                    
+                    # 2. Add fallback Moneyline from The Odds API if Bovada moneyline wasn't found
+                    if api_odds_context and api_odds_context != "None available":
+                        has_ml = any(o["match_id"] == match_id and o["market_type"] == "Moneyline" for o in discovered_odds)
+                        if not has_ml:
+                            try:
+                                api_games = json.loads(api_odds_context)
+                                for g in api_games:
+                                    g_home = g.get("home_team", "").lower()
+                                    g_away = g.get("away_team", "").lower()
+                                    if m["home_team"].lower() in g_home and m["away_team"].lower() in g_away:
+                                        ml_market = g.get("odds", {}).get("Moneyline", {})
+                                        for out in ml_market.get("outcomes", []):
+                                            discovered_odds.append({
+                                                "match_id": match_id,
+                                                "market_type": "Moneyline",
+                                                "selection": out.get("name"),
+                                                "dk_odds": int(out.get("price"))
+                                            })
+                            except Exception:
+                                pass
+
+                if discovered_matches and discovered_odds:
+                    print("[DEBUG] Programmatic mapping succeeded!")
+                    programmatic_success = True
+            except Exception as map_err:
+                print(f"[DEBUG] Programmatic mapping failed, falling back to Gemini: {map_err}")
+
+        # Fall back to Gemini API only if programmatic mapping didn't produce odds
+        if not programmatic_success:
+            print("[DEBUG] Running Gemini model for fallback odds simulation...")
+            prompt = f"""
 Based on the following actual World Cup 2026 matches scheduled for {target_date_str}:
 {json.dumps(target_matches_data, indent=2)}
 
@@ -2344,36 +2572,24 @@ We have also scraped the following general and match-specific DraftKings promoti
 {dk_promos_context if dk_promos_context else "None available"}
 
 Task:
-Generate a unique match_id (e.g. "GER-CIV-2026") for each match, and provide betting odds for ALL available markets grounded on the real Bovada and Odds API data above.
+Generate a unique match_id (e.g. "GER-CIV-2026") for each match, and provide betting odds for the main actionable markets grounded on the real Bovada and Odds API data above.
 
 CRITICAL ODDS MAPPING REQUIREMENTS:
-1. For ALL markets where Bovada has live data, you MUST use those EXACT prices and selections:
+1. For the following core markets, you MUST use those EXACT prices and selections from Bovada or Odds API:
    - "Moneyline" → use Bovada 3-Way Moneyline prices exactly (Home, Away, Draw).
-   - "BTTS" → use Bovada "Both Teams to Score" prices exactly.
-   - "Total Goals" → use Bovada "Total Goals" prices exactly.
+   - "BTTS" → use Bovada "Both Teams to Score" prices exactly (Yes/No).
+   - "Total Goals" → use Bovada "Total Goals" prices exactly (Over/Under 2.5).
    - "Spread" → use Bovada "Goal Spread" prices exactly.
    - "Corners" → use Bovada "Total Corners" prices exactly.
-   - "Anytime Goalscorer" → output ALL players from Bovada with exact prices.
-   - "First Goalscorer" → output ALL players from Bovada with exact prices.
-   - "To Score 2+ Goals" → output ALL players from Bovada with exact prices.
-   - "Hat Trick Scorer" → output ALL players from Bovada with exact prices.
-   - "Header Scorer" → output ALL players from Bovada with exact prices.
-   - "To Assist a Goal" → output ALL players from Bovada with exact prices.
-   - "To Score or Assist" → output ALL players from Bovada with exact prices.
-   - "Player Shots on Target" → output ALL players, ALL outcome lines from Bovada with exact prices.
-   - "Player Shots" → output ALL players, ALL outcome lines from Bovada with exact prices.
-   - "Player Saves" → output ALL goalkeepers, ALL outcome lines from Bovada with exact prices.
-   - "Player Tackles" → output ALL players, ALL outcome lines from Bovada with exact prices.
-   - "Game Stats" → use Bovada team-level shots/SOT lines with exact prices.
+   - "Anytime Goalscorer" → output players from the Anytime Goalscorer list with exact prices.
+   - "Player Shots" → output player shots Over/Under lines with exact prices.
+   - "Player Shots on Target" → output player shots on target Over/Under lines with exact prices.
+   - "Player Tackles" → output player tackles Over/Under lines with exact prices.
    - "Total Cards" → use Bovada "Total Cards" lines with exact prices.
-   - "Player Cards" → output ALL players from Bovada with exact prices.
    - "Double Chance" → use Bovada "Double Chance" prices exactly.
    - "Draw No Bet" → use Bovada "Draw No Bet" prices exactly.
-   - "Correct Score" → use Bovada "Correct Score" prices exactly.
-   - "Combo Props" → use Bovada "Combo Props" prices exactly.
-2. Format Player Prop selections as: "Player Name Over X.5 Shots on Target", "Player Name 2+ Tackles", etc.
+2. Format Player Prop selections as: "Player Name Over/Under X.5 [stat]".
 3. Only estimate/simulate odds when NO real data exists from any source.
-4. For Promo/Boost: only add if found in DraftKings snippet data.
 
 
 Format your output strictly as a JSON object matching this schema:
@@ -2396,24 +2612,12 @@ Format your output strictly as a JSON object matching this schema:
      {{"match_id": "...", "market_type": "Spread", "selection": "Team Name +/-X.5", "dk_odds": integer}},
      {{"match_id": "...", "market_type": "Corners", "selection": "Over Y.5 Corners or Under Y.5 Corners", "dk_odds": integer}},
      {{"match_id": "...", "market_type": "Anytime Goalscorer", "selection": "Player Name to Score", "dk_odds": integer}},
-     {{"match_id": "...", "market_type": "First Goalscorer", "selection": "Player Name", "dk_odds": integer}},
-     {{"match_id": "...", "market_type": "To Score 2+ Goals", "selection": "Player Name", "dk_odds": integer}},
-     {{"match_id": "...", "market_type": "Hat Trick Scorer", "selection": "Player Name", "dk_odds": integer}},
-     {{"match_id": "...", "market_type": "Header Scorer", "selection": "Player Name", "dk_odds": integer}},
-     {{"match_id": "...", "market_type": "To Assist a Goal", "selection": "Player Name", "dk_odds": integer}},
-     {{"match_id": "...", "market_type": "To Score or Assist", "selection": "Player Name", "dk_odds": integer}},
      {{"match_id": "...", "market_type": "Player Shots", "selection": "Player Name Over/Under X.5 Shots", "dk_odds": integer}},
      {{"match_id": "...", "market_type": "Player Shots on Target", "selection": "Player Name Over/Under X.5 Shots on Target", "dk_odds": integer}},
-     {{"match_id": "...", "market_type": "Player Saves", "selection": "Player Name Over/Under X.5 Saves", "dk_odds": integer}},
      {{"match_id": "...", "market_type": "Player Tackles", "selection": "Player Name Over/Under X.5 Tackles", "dk_odds": integer}},
-     {{"match_id": "...", "market_type": "Game Stats", "selection": "e.g. Total Shots Over 22.5", "dk_odds": integer}},
      {{"match_id": "...", "market_type": "Total Cards", "selection": "Over/Under X.5 Cards", "dk_odds": integer}},
-     {{"match_id": "...", "market_type": "Player Cards", "selection": "Player Name to be Shown a Card", "dk_odds": integer}},
      {{"match_id": "...", "market_type": "Double Chance", "selection": "e.g. Home/Draw or Away/Draw", "dk_odds": integer}},
-     {{"match_id": "...", "market_type": "Draw No Bet", "selection": "Home Team or Away Team", "dk_odds": integer}},
-     {{"match_id": "...", "market_type": "Correct Score", "selection": "e.g. 1-0 or 2-1", "dk_odds": integer}},
-     {{"match_id": "...", "market_type": "Combo Props", "selection": "e.g. Japan win and Yes BTTS", "dk_odds": integer}},
-     {{"match_id": "...", "market_type": "Promo/Boost", "selection": "Descriptive boosted selection string", "dk_odds": integer}}
+     {{"match_id": "...", "market_type": "Draw No Bet", "selection": "Home Team or Away Team", "dk_odds": integer}}
   ]
 }}
 
@@ -2423,36 +2627,33 @@ Guidelines:
 3. Two Total Goals selections using the exact Bovada line and prices.
 4. Two Spread selections using the exact Bovada handicap and prices.
 5. Two Corners selections using the exact Bovada Total Corners line and prices.
-6. Anytime Goalscorer, First Goalscorer, To Score 2+ Goals, Hat Trick Scorer, Header Scorer: output ALL players from Bovada with exact prices.
-7. To Assist a Goal and To Score or Assist: output ALL players from Bovada with exact prices.
-8. Player Shots, Player SOT, Player Saves, Player Tackles: output ALL players, ALL lines from Bovada with exact prices. Format: "Player Name Over/Under X.5 [stat]".
-9. Game Stats (team shots/SOT): output all available Bovada lines exactly.
-10. Total Cards and Player Cards: output all Bovada lines exactly.
-11. Double Chance, Draw No Bet, Correct Score, Combo Props: use Bovada prices exactly.
-12. Promo/Boost: only include if found in DraftKings snippet data.
-13. Use integer American odds (EVEN → 100, +150 → 150, -110 → -110).
+6. Anytime Goalscorer: output players from Bovada with exact prices.
+7. Player Shots, Player SOT, Player Tackles: output players and lines from Bovada with exact prices. Format: "Player Name Over/Under X.5 [stat]".
+8. Total Cards: output Bovada lines exactly.
+9. Double Chance, Draw No Bet: use Bovada prices exactly.
+10. Use integer American odds (EVEN → 100, +150 → 150, -110 → -110).
 """
-        content = generate_content_with_fallback(api_key, prompt, json_mode=True)
-        
-        # Parse JSON
-        try:
-            data = json.loads(content)
-        except json.JSONDecodeError as je:
-            print(f"[DEBUG] JSONDecodeError in scrape_and_update_match_data: {je}. Attempting cleanup...")
-            if "```json" in content:
-                content = content.split("```json")[1].split("```")[0].strip()
-            elif "```" in content:
-                content = content.split("```")[1].split("```")[0].strip()
+            content = generate_content_with_fallback(api_key, prompt, json_mode=True)
             
+            # Parse JSON
             try:
                 data = json.loads(content)
-            except Exception as e2:
-                print(f"[DEBUG] Failed to parse JSON even after cleanup. Error: {e2}\nRaw content: {content}")
-                st.error(f"Failed to parse AI-generated odds: {e2}")
-                return
-            
-        discovered_matches = data.get("matches", [])
-        discovered_odds = data.get("odds", [])
+            except json.JSONDecodeError as je:
+                print(f"[DEBUG] JSONDecodeError in scrape_and_update_match_data: {je}. Attempting cleanup...")
+                if "```json" in content:
+                    content = content.split("```json")[1].split("```")[0].strip()
+                elif "```" in content:
+                    content = content.split("```")[1].split("```")[0].strip()
+                
+                try:
+                    data = json.loads(content)
+                except Exception as e2:
+                    print(f"[DEBUG] Failed to parse JSON even after cleanup. Error: {e2}\nRaw content: {content}")
+                    st.error(f"Failed to parse AI-generated odds: {e2}")
+                    return
+                
+            discovered_matches = data.get("matches", [])
+            discovered_odds = data.get("odds", [])
         
         # Adjust any Spread odds that have a +/-0.5 handicap to the Moneyline category
         import re
@@ -2475,8 +2676,22 @@ Guidelines:
             st.session_state['odds_trend_history'] = {}
 
         try:
-            matches_to_del = supabase.table("matches").select("match_id").filter("kickoff_time", "gte", f"{target_date_iso}T00:00:00-05:00").filter("kickoff_time", "lte", f"{target_date_iso}T23:59:59-05:00").execute()
-            ids_to_del = [m['match_id'] for m in matches_to_del.data]
+            matches_to_del = supabase.table("matches").select("match_id, kickoff_time").filter("kickoff_time", "gte", f"{target_date_iso}T00:00:00-05:00").filter("kickoff_time", "lte", f"{target_date_iso}T23:59:59-05:00").execute()
+            # Only delete unstarted matches from the database during sync
+            now_utc = datetime.now(timezone.utc)
+            ids_to_del = []
+            for m in matches_to_del.data:
+                ktime_str = m.get("kickoff_time")
+                if ktime_str:
+                    try:
+                        ktime = datetime.fromisoformat(ktime_str.replace("Z", "+00:00"))
+                        if ktime > now_utc:
+                            ids_to_del.append(m["match_id"])
+                    except Exception:
+                        ids_to_del.append(m["match_id"]) # Default to include if parsing fails
+                else:
+                    ids_to_del.append(m["match_id"])
+
             if ids_to_del:
                 # Snapshot current odds BEFORE deleting (line movement baseline)
                 existing_odds_resp = supabase.table("odds").select("match_id,market_type,selection,dk_odds").in_("match_id", ids_to_del).execute()
@@ -2717,7 +2932,13 @@ def compute_implied_probabilities(odds_data: list) -> str:
     return "\n".join(lines)
 
 
-def evaluate_tactical_matchups_ai(match: Match, api_key: str) -> Optional[Dict[str, Any]]:
+def evaluate_tactical_matchups_ai(
+    match: Match,
+    api_key: str,
+    trend_history: Optional[Dict[str, Any]] = None,
+    line_movement_data: Optional[Dict[str, Any]] = None,
+    venue_map: Optional[Dict[str, Any]] = None
+) -> Optional[Dict[str, Any]]:
     """
     Evaluates tactical matchups with comprehensive multi-source research:
     - Google Search Grounding (with DDG/Yahoo fallback)
@@ -2742,7 +2963,11 @@ def evaluate_tactical_matchups_ai(match: Match, api_key: str) -> Optional[Dict[s
         prob_table = compute_implied_probabilities(odds_data)
 
         # --- 2. Line movement context (multi-sync trend) ---
-        trend_history = st.session_state.get('odds_trend_history', {})
+        if trend_history is None:
+            try:
+                trend_history = st.session_state.get('odds_trend_history', {})
+            except Exception:
+                trend_history = {}
         line_movement_str = ""
         movements = []
         for o in odds_data:
@@ -2756,7 +2981,11 @@ def evaluate_tactical_matchups_ai(match: Match, api_key: str) -> Optional[Dict[s
                     f"  {o['market_type']}: {o['selection']} trend: {trajectory_str} ({direction}, total Δ{delta:+d})"
                 )
             else:
-                line_movement_data = st.session_state.get('line_movement_data', {})
+                if line_movement_data is None:
+                    try:
+                        line_movement_data = st.session_state.get('line_movement_data', {})
+                    except Exception:
+                        line_movement_data = {}
                 old_odds = line_movement_data.get(key)
                 if old_odds is not None and old_odds != o['dk_odds']:
                     delta = o['dk_odds'] - old_odds
@@ -2770,7 +2999,11 @@ def evaluate_tactical_matchups_ai(match: Match, api_key: str) -> Optional[Dict[s
 
         # --- 3. Venue weather context ---
         match_date_str = match.kickoff_time.strftime("%Y-%m-%d")
-        venue_map = st.session_state.get('venue_map', {})
+        if venue_map is None:
+            try:
+                venue_map = st.session_state.get('venue_map', {})
+            except Exception:
+                venue_map = {}
         venue_city = venue_map.get(f"{match.home_team}|{match.away_team}", "")
         weather_str = get_weather_context(venue_city, match_date_str) if venue_city else ""
         print(f"[DEBUG] Weather context for {match.match_id}: {weather_str[:80] if weather_str else 'N/A'}")
@@ -3108,6 +3341,58 @@ If no value exists anywhere, return `"recommendations": []`.
         print(f"[DEBUG] Exception in evaluate_tactical_matchups_ai: {e}")
         return {"error": str(e)}
 
+
+def run_parallel_ai_research(matches: List[Match], api_key: str):
+    """
+    Evaluates multiple matchups in parallel via ThreadPoolExecutor to save time.
+    Saves results directly to st.session_state.conviction_picks.
+    """
+    if 'conviction_picks' not in st.session_state:
+        st.session_state.conviction_picks = {}
+        
+    # We only process matches that do not already have conviction picks
+    pending_matches = [m for m in matches if st.session_state.conviction_picks.get(m.match_id) is None]
+    if not pending_matches:
+        # If none are pending, rerun all matches on the date
+        pending_matches = matches
+
+    # Fetch st.session_state values from the main thread so they are thread-safe
+    try:
+        trend_history = st.session_state.get('odds_trend_history', {})
+    except Exception:
+        trend_history = {}
+    try:
+        line_movement_data = st.session_state.get('line_movement_data', {})
+    except Exception:
+        line_movement_data = {}
+    try:
+        venue_map = st.session_state.get('venue_map', {})
+    except Exception:
+        venue_map = {}
+
+    def _evaluate_single(match: Match):
+        try:
+            return match.match_id, evaluate_tactical_matchups_ai(
+                match,
+                api_key,
+                trend_history=trend_history,
+                line_movement_data=line_movement_data,
+                venue_map=venue_map
+            )
+        except Exception as e:
+            return match.match_id, {"error": str(e)}
+
+    # Run in parallel
+    with ThreadPoolExecutor(max_workers=min(len(pending_matches), 4)) as executor:
+        futures = [executor.submit(_evaluate_single, m) for m in pending_matches]
+        for fut in as_completed(futures):
+            try:
+                mid, result = fut.result()
+                st.session_state.conviction_picks[mid] = result
+            except Exception as e:
+                print(f"[DEBUG] Error in parallel AI research execution: {e}")
+
+
 def get_final_scores(api_key: str = "") -> Dict[str, str]:
     """
     Fetches final scores for completed World Cup matches.
@@ -3171,7 +3456,7 @@ def get_final_scores(api_key: str = "") -> Dict[str, str]:
     # --- Fallback: Wikipedia ---
     try:
         import re
-        wiki_matches = get_wikipedia_matches()
+        wiki_matches = get_api_matches()
         completed = [m for m in wiki_matches if re.match(r'^\d+-\d+$', m.get("score", ""))]
         if not completed:
             return {}
@@ -3656,18 +3941,18 @@ def execute_sync_pipeline():
             all_matches.sort(key=lambda m: m.kickoff_time)
             st.session_state.all_matches = all_matches
 
-            # Step 2b: Fetch lineups for the synced date's matches
-            # Runs for any date — AI projection always produces a result as final fallback.
+            # Step 2b: Fetch lineups only for unstarted matches on the synced date
+            now_utc = datetime.now(timezone.utc)
             target_matches = [
                 m for m in all_matches
-                if to_central_time(m.kickoff_time)[0].date() == target_date
+                if to_central_time(m.kickoff_time)[0].date() == target_date and m.kickoff_time > now_utc
             ]
             if target_matches:
-                status.update(label=f"Fetching lineups for {len(target_matches)} match(es) on {target_date}...")
+                status.update(label=f"Fetching lineups for {len(target_matches)} upcoming match(es) on {target_date}...")
                 st.write(f"**⚽ Lineup Discovery ({target_date})**")
                 fetch_and_store_lineups(target_matches, api_key)
             else:
-                st.info(f"ℹ️ No matches found for {target_date} — lineup step skipped.")
+                st.info(f"ℹ️ No upcoming matches found for {target_date} — lineup step skipped.")
 
 
             # Reset conviction picks so user can run fresh research on newly synced matches
@@ -3891,6 +4176,27 @@ def render_main_dashboard():
             help="Define the dollar value of 1 Unit to track real cash returns."
         )
 
+        st.markdown("---")
+        st.subheader("Bulk AI Actions")
+        if 'all_matches' in st.session_state and st.session_state.all_matches:
+            selected_date_str = target_date.strftime("%Y-%m-%d")
+            day_matches = [m for m in st.session_state.all_matches if to_central_time(m.kickoff_time)[0].strftime("%Y-%m-%d") == selected_date_str]
+            if day_matches:
+                st.caption(f"Evaluate all {len(day_matches)} match(es) for {selected_date_str} in parallel.")
+                api_key_for_all = st.session_state.get("gemini_api_key") or os.environ.get("GEMINI_API_KEY")
+                if st.button("🔍 Run AI Research for All", use_container_width=True, key="bulk_ai_research"):
+                    if not api_key_for_all:
+                        st.error("Please enter your Gemini API Key first.")
+                    else:
+                        with st.spinner(f"Running parallel AI evaluations for {len(day_matches)} match(es)..."):
+                            run_parallel_ai_research(day_matches, api_key_for_all)
+                            st.toast("AI Research complete for all matches!")
+                            st.rerun()
+            else:
+                st.caption("No matches found for selected date to evaluate.")
+        else:
+            st.caption("No matches synced yet.")
+
     # --- Main Sync Trigger ---
     sync_col, settle_col = st.columns(2)
     with sync_col:
@@ -3944,6 +4250,27 @@ def render_main_dashboard():
             
         selected_date_str = target_date.strftime("%Y-%m-%d")
         day_matches = [m for m in st.session_state.all_matches if to_central_time(m.kickoff_time)[0].strftime("%Y-%m-%d") == selected_date_str]
+        
+        # Bubble matches with active/higher AI conviction recommendations to the top
+        def get_sort_weight(m: Match):
+            res = st.session_state.conviction_picks.get(m.match_id)
+            if not res or not isinstance(res, dict) or "error" in res:
+                return 0
+            recs = res.get("recommendations", [])
+            if not recs:
+                return 1
+            max_conv = 0
+            for r in recs:
+                conv = r.get("conviction", "").lower()
+                if conv == "high":
+                    max_conv = max(max_conv, 4)
+                elif conv == "medium":
+                    max_conv = max(max_conv, 3)
+                elif conv == "low":
+                    max_conv = max(max_conv, 2)
+            return max_conv if max_conv > 0 else 1
+
+        day_matches.sort(key=get_sort_weight, reverse=True)
         
         if not day_matches:
             st.warning(f"No matches found in the database for {target_date.strftime('%A, %b %d, %Y')}. Run the sync pipeline to discover games for this date.")
