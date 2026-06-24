@@ -548,20 +548,20 @@ def scrape_confirmed_lineup(home_team: str, away_team: str) -> Optional[Dict[str
 def fetch_and_store_lineups(match_objects: List["Match"], api_key: str) -> None:
     """
     For each match in match_objects that does NOT already have a confirmed 11-man lineup,
-    fetches the lineup via a 3-tier priority:
+    fetches the lineup via a 3-tier priority in parallel:
       1. API-Football /fixtures/lineups  (most reliable — official data when announced)
       2. Web scrape (DuckDuckGo/Yahoo) for confirmed starting XI articles
       3. Gemini AI projection (always produces a result — guaranteed non-empty fallback)
     Updates the match record in Supabase.
     Works for any date's matches — not restricted to today.
     """
+    from concurrent.futures import ThreadPoolExecutor
     af_key = os.environ.get("API_FOOTBALL_KEY", "")
 
-    for match in match_objects:
+    def _fetch_single_match_lineup(match):
         # Skip if already confirmed with a full 11-man lineup
         if match.lineup_status == LineupStatus.CONFIRMED and len(match.home_lineup) >= 11:
-            st.write(f"  ✅ `{match.home_team} vs {match.away_team}`: confirmed lineup already stored, skipping.")
-            continue
+            return
 
         home_lineup: List[str] = []
         away_lineup: List[str] = []
@@ -590,7 +590,6 @@ def fetch_and_store_lineups(match_objects: List["Match"], api_key: str) -> None:
                     )
                     if fx_resp.status_code == 200:
                         fx_list = fx_resp.json().get("response", [])
-                        # Find the fixture matching both teams
                         fx_id = None
                         for fx in fx_list:
                             h_id = fx["teams"]["home"]["id"]
@@ -665,8 +664,8 @@ def fetch_and_store_lineups(match_objects: List["Match"], api_key: str) -> None:
                 print(f"[DEBUG] AI lineup generation failed for {match.match_id}: {gen_err}")
 
         if not home_lineup and not away_lineup:
-            st.write(f"  ⚠️ `{match.home_team} vs {match.away_team}`: all lineup sources failed.")
-            continue
+            print(f"[DEBUG] `{match.home_team} vs {match.away_team}`: all lineup sources failed.")
+            return
 
         # --- Persist to Supabase ---
         try:
@@ -679,10 +678,21 @@ def fetch_and_store_lineups(match_objects: List["Match"], api_key: str) -> None:
             match.home_lineup = home_lineup
             match.away_lineup = away_lineup
             match.lineup_status = new_status
-
-            st.write(f"  {source_label} — `{match.home_team} vs {match.away_team}` ({len(home_lineup)} / {len(away_lineup)} players)")
+            match._source_label = source_label  # store temporarily for UI report
         except Exception as db_err:
             print(f"[DEBUG] Failed to store lineup for {match.match_id}: {db_err}")
+
+    # Run in parallel using thread pool
+    with ThreadPoolExecutor(max_workers=min(len(match_objects), 5)) as executor:
+        executor.map(_fetch_single_match_lineup, match_objects)
+
+    # Main thread UI notification report
+    for match in match_objects:
+        lbl = getattr(match, "_source_label", "Processed")
+        if match.home_lineup or match.away_lineup:
+            st.write(f"  {lbl} — `{match.home_team} vs {match.away_team}` ({len(match.home_lineup)} / {len(match.away_lineup)} players)")
+        else:
+            st.write(f"  ⚠️ `{match.home_team} vs {match.away_team}`: lineup processing failed.")
 
 
 # Keep old name as alias for backward compat
@@ -1947,19 +1957,16 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
         if skipped_matches:
             skipped_names = ", ".join(f"{m['home_team']} vs {m['away_team']}" for m in skipped_matches)
             st.info(
-                f"⏩ **{len(skipped_matches)} match(es) already started/finished — skipped from sync** "
+                f"⏩ **{len(skipped_matches)} match(es) already started/finished — skipped from pre-game odds sync** "
                 f"(use ⚡ Settle Pending Bets to resolve those bets):\n\n{skipped_names}"
             )
 
-        if not pre_game_matches:
-            st.info("All matches for this date have already kicked off. No odds to sync. Use ⚡ Settle Pending Bets.")
-            return
-
+        all_day_matches = day_matches
         day_matches = pre_game_matches
 
         # 3. Pull actual odds from The Odds API if apiKey is present
         api_odds_context = ""
-        if odds_api_key:
+        if odds_api_key and pre_game_matches:
             try:
                 # Soccer FIFA World Cup sport key is 'soccer_fifa_world_cup'
                 odds_url = f"https://api.the-odds-api.com/v4/sports/soccer_fifa_world_cup/odds/"
@@ -2085,27 +2092,28 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
 
         # 4. Fetch Bovada FIFA World Cup player props and lines (free & keyless)
         bovada_context = {}
-        try:
-            bovada_url = "https://www.bovada.lv/services/sports/event/v2/events/A/description/soccer/fifa-world-cup"
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            }
-            bovada_resp = requests.get(bovada_url, headers=headers, timeout=12)
-            if bovada_resp.status_code == 200:
-                bovada_data = bovada_resp.json()
-                if bovada_data and len(bovada_data) > 0:
-                    bovada_events = bovada_data[0].get("events", [])
-                    print(f"[DEBUG] Fetched {len(bovada_events)} events from Bovada.")
-                    for ev in bovada_events:
-                        desc = ev.get("description", "")
-                        if " vs " in desc:
-                            parts = desc.split(" vs ")
-                            home_clean = parts[0].strip().lower()
-                            away_clean = parts[1].strip().lower()
-                            key = f"{home_clean}-{away_clean}"
-                            bovada_context[key] = ev
-        except Exception as bov_err:
-            print(f"[DEBUG] Bovada request failed: {bov_err}")
+        if pre_game_matches:
+            try:
+                bovada_url = "https://www.bovada.lv/services/sports/event/v2/events/A/description/soccer/fifa-world-cup"
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                }
+                bovada_resp = requests.get(bovada_url, headers=headers, timeout=12)
+                if bovada_resp.status_code == 200:
+                    bovada_data = bovada_resp.json()
+                    if bovada_data and len(bovada_data) > 0:
+                        bovada_events = bovada_data[0].get("events", [])
+                        print(f"[DEBUG] Fetched {len(bovada_events)} events from Bovada.")
+                        for ev in bovada_events:
+                            desc = ev.get("description", "")
+                            if " vs " in desc:
+                                parts = desc.split(" vs ")
+                                home_clean = parts[0].strip().lower()
+                                away_clean = parts[1].strip().lower()
+                                key = f"{home_clean}-{away_clean}"
+                                bovada_context[key] = ev
+            except Exception as bov_err:
+                print(f"[DEBUG] Bovada request failed: {bov_err}")
 
         # Discover daily DraftKings promos and odds boosts via web search
         # Optimized: general promo web scraping skipped during sync.
@@ -2332,15 +2340,16 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
         # Execute news fetching and Bovada summaries in parallel across all matches
         from concurrent.futures import as_completed
         results = []
-        with ThreadPoolExecutor(max_workers=min(len(day_matches), 4)) as outer_ex:
-            futures = {outer_ex.submit(_process_single_match, m): m for m in day_matches}
-            for fut in as_completed(futures):
-                try:
-                    results.append(fut.result(timeout=15))
-                except Exception as fut_err:
-                    m_obj = futures[fut]
-                    print(f"[DEBUG] News/Bovada fetch timed out or failed for {m_obj.get('home_team')} vs {m_obj.get('away_team')}: {fut_err}")
-                    results.append((m_obj, "", {}, ""))
+        if pre_game_matches:
+            with ThreadPoolExecutor(max_workers=min(len(day_matches), 4)) as outer_ex:
+                futures = {outer_ex.submit(_process_single_match, m): m for m in day_matches}
+                for fut in as_completed(futures):
+                    try:
+                        results.append(fut.result(timeout=15))
+                    except Exception as fut_err:
+                        m_obj = futures[fut]
+                        print(f"[DEBUG] News/Bovada fetch timed out or failed for {m_obj.get('home_team')} vs {m_obj.get('away_team')}: {fut_err}")
+                        results.append((m_obj, "", {}, ""))
 
         rag_search_context = ""
         bovada_all_matches_summary = {}
@@ -2360,14 +2369,28 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
         # Try programmatic mapping first if Bovada or Odds API data is present
         # This takes 0.01 seconds and bypasses the Gemini LLM call completely.
         programmatic_success = False
-        if bovada_all_matches_summary or (api_odds_context and api_odds_context != "None available"):
+        if not pre_game_matches:
+            print("[DEBUG] No pre-game matches to sync. Populating shell match details for started/finished matches.")
+            for m in all_day_matches:
+                match_id = f"{m['home_team'][:3].upper()}-{m['away_team'][:3].upper()}-2026"
+                discovered_matches.append({
+                    "match_id": match_id,
+                    "kickoff_time": m["kickoff_time"].isoformat() if isinstance(m["kickoff_time"], datetime) else m["kickoff_time"],
+                    "home_team": m["home_team"],
+                    "away_team": m["away_team"],
+                    "lineup_status": "Projected",
+                    "home_lineup": [],
+                    "away_lineup": []
+                })
+            programmatic_success = True
+        elif bovada_all_matches_summary or (api_odds_context and api_odds_context != "None available"):
             try:
                 print("[DEBUG] Attempting programmatic odds mapping from live feeds...")
                 for m in day_matches:
                     match_id = f"{m['home_team'][:3].upper()}-{m['away_team'][:3].upper()}-2026"
                     discovered_matches.append({
                         "match_id": match_id,
-                        "kickoff_time": m["kickoff_time"].isoformat(),
+                        "kickoff_time": m["kickoff_time"].isoformat() if isinstance(m["kickoff_time"], datetime) else m["kickoff_time"],
                         "home_team": m["home_team"],
                         "away_team": m["away_team"],
                         "lineup_status": "Projected",
@@ -2680,6 +2703,20 @@ Guidelines:
             discovered_matches = data.get("matches", [])
             discovered_odds = data.get("odds", [])
         
+        # Add shell matches for any started/skipped matches so they are not missing from DB
+        for m in skipped_matches:
+            match_id = f"{m['home_team'][:3].upper()}-{m['away_team'][:3].upper()}-2026"
+            if not any(dm["match_id"] == match_id for dm in discovered_matches):
+                discovered_matches.append({
+                    "match_id": match_id,
+                    "kickoff_time": m["kickoff_time"].isoformat() if isinstance(m["kickoff_time"], datetime) else m["kickoff_time"],
+                    "home_team": m["home_team"],
+                    "away_team": m["away_team"],
+                    "lineup_status": "Projected",
+                    "home_lineup": [],
+                    "away_lineup": []
+                })
+
         # Adjust any Spread odds that have a +/-0.5 handicap to the Moneyline category
         import re
         for o in discovered_odds:
@@ -2741,7 +2778,7 @@ Guidelines:
 
         # Build a venue map from the wikipedia matches for this date
         venue_map = {}
-        for m in day_matches:
+        for m in all_day_matches:
             key = f"{m['home_team']}|{m['away_team']}"
             venue_map[key] = m.get('venue_city', '')
         st.session_state['venue_map'] = venue_map
@@ -3473,7 +3510,17 @@ If no value exists anywhere, return `"recommendations": []`.
                 if validated_rec["true_odds"] is not None:
                     validated_rec["is_taxed"] = validated_rec["base_odds"] < validated_rec["true_odds"]
                     
-                print(f"[DEBUG] Successfully validated AI SGP pick: {validated_rec['selection']} at {validated_rec['base_odds']}")
+                # Ensure the SGP has a positive expected edge before adding it
+                true_prob = validated_rec.get("true_prob_pct")
+                vig_adj = validated_rec.get("vig_adj_pct")
+                edge = validated_rec.get("edge_pct")
+                computed_edge = (true_prob - vig_adj) if (true_prob is not None and vig_adj is not None) else (edge or 0.0)
+                
+                if computed_edge <= 0.0:
+                    print(f"[DEBUG] Skipping SGP recommendation '{validated_rec['selection']}' due to negative or zero edge ({computed_edge:.2f}%)")
+                    continue
+
+                print(f"[DEBUG] Successfully validated AI SGP pick: {validated_rec['selection']} at {validated_rec['base_odds']} (Edge: +{computed_edge:.2f}%)")
                 valid_picks.append(validated_rec)
                 
             else:
@@ -3508,7 +3555,17 @@ If no value exists anywhere, return `"recommendations": []`.
                 if true_odds is not None:
                     validated_rec["is_taxed"] = live_odds < true_odds
                 
-                print(f"[DEBUG] Successfully validated AI pick: {validated_rec['selection']} at {validated_rec['base_odds']}")
+                # Ensure the pick has a positive expected edge before adding it
+                true_prob = validated_rec.get("true_prob_pct")
+                vig_adj = validated_rec.get("vig_adj_pct")
+                edge = validated_rec.get("edge_pct")
+                computed_edge = (true_prob - vig_adj) if (true_prob is not None and vig_adj is not None) else (edge or 0.0)
+                
+                if computed_edge <= 0.0:
+                    print(f"[DEBUG] Skipping recommendation '{validated_rec['selection']}' due to negative or zero edge ({computed_edge:.2f}%)")
+                    continue
+
+                print(f"[DEBUG] Successfully validated AI pick: {validated_rec['selection']} at {validated_rec['base_odds']} (Edge: +{computed_edge:.2f}%)")
                 valid_picks.append(validated_rec)
                 
         return {
