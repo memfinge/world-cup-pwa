@@ -2589,15 +2589,44 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
             except Exception as map_err:
                 print(f"[DEBUG] Programmatic mapping failed, falling back to Gemini: {map_err}")
 
-        # Fall back to Gemini API only if programmatic mapping didn't produce odds
-        if not programmatic_success:
-            target_matches_data = day_matches
-            print("[DEBUG] Running Gemini model for fallback odds simulation...")
+        # Identify matches that need hybrid enrichment (fewer than 8 lines, or missing core markets)
+        matches_needing_enrichment = []
+        if pre_game_matches:
+            for m in day_matches:
+                match_id = f"{m['home_team'][:3].upper()}-{m['away_team'][:3].upper()}-2026"
+                match_odds = [o for o in discovered_odds if o["match_id"] == match_id]
+                has_ml = any(o["market_type"] == "Moneyline" for o in match_odds)
+                has_btts = any(o["market_type"] == "BTTS" for o in match_odds)
+                has_totals = any(o["market_type"] == "Total Goals" for o in match_odds)
+                
+                # If a match has fewer than 8 total selections, or is missing a core market, it needs enrichment
+                if len(match_odds) < 8 or not has_ml or not has_btts or not has_totals:
+                    matches_needing_enrichment.append(m)
+                    print(f"[DEBUG] Match {m['home_team']} vs {m['away_team']} needs hybrid odds enrichment (current selections: {len(match_odds)}).")
+
+        # Fall back to Gemini API only if programmatic mapping didn't produce odds OR if some matches need hybrid enrichment
+        if pre_game_matches and (not programmatic_success or matches_needing_enrichment):
+            target_matches_data = matches_needing_enrichment if programmatic_success else day_matches
+            target_match_ids = {f"{m['home_team'][:3].upper()}-{m['away_team'][:3].upper()}-2026" for m in target_matches_data}
+            existing_real_odds = [o for o in discovered_odds if o["match_id"] in target_match_ids]
+            
+            # Convert datetime objects to string for JSON serialization
+            serializable_matches = []
+            for m in target_matches_data:
+                m_copy = m.copy()
+                if isinstance(m_copy.get("kickoff_time"), datetime):
+                    m_copy["kickoff_time"] = m_copy["kickoff_time"].isoformat()
+                serializable_matches.append(m_copy)
+                
+            print(f"[DEBUG] Running Gemini model for hybrid odds enrichment/simulation on {len(target_matches_data)} match(es)...")
             prompt = f"""
 Based on the following actual World Cup 2026 matches scheduled for {target_date_str}:
-{json.dumps(target_matches_data, indent=2)}
+{json.dumps(serializable_matches, indent=2)}
 
-We have fetched official live market odds data from The Odds API (if available):
+We have mapped some REAL live sportsbook odds for these matches from live feeds:
+{json.dumps(existing_real_odds, indent=2) if existing_real_odds else "None available"}
+
+We also have fetched official live market odds data from The Odds API (if available):
 {api_odds_context if api_odds_context else "None available"}
 
 We have also fetched comprehensive live data from Bovada (if available), including:
@@ -2620,24 +2649,14 @@ We have also scraped the following general and match-specific DraftKings promoti
 {dk_promos_context if dk_promos_context else "None available"}
 
 Task:
-Generate a unique match_id (e.g. "GER-CIV-2026") for each match, and provide betting odds for the main actionable markets grounded on the real Bovada and Odds API data above.
+Generate a unique match_id (e.g. "GER-CIV-2026") for each match, and provide a comprehensive, complete board of betting odds for the main actionable markets.
 
-CRITICAL ODDS MAPPING REQUIREMENTS:
-1. For the following core markets, you MUST use those EXACT prices and selections from Bovada or Odds API:
-   - "Moneyline" → use Bovada 3-Way Moneyline prices exactly (Home, Away, Draw).
-   - "BTTS" → use Bovada "Both Teams to Score" prices exactly (Yes/No).
-   - "Total Goals" → use Bovada "Total Goals" prices exactly (Over/Under 2.5).
-   - "Spread" → use Bovada "Goal Spread" prices exactly.
-   - "Corners" → use Bovada "Total Corners" prices exactly.
-   - "Anytime Goalscorer" → output players from the Anytime Goalscorer list with exact prices.
-   - "Player Shots" → output player shots Over/Under lines with exact prices.
-   - "Player Shots on Target" → output player shots on target Over/Under lines with exact prices.
-   - "Player Tackles" → output player tackles Over/Under lines with exact prices.
-   - "Total Cards" → use Bovada "Total Cards" lines with exact prices.
-   - "Double Chance" → use Bovada "Double Chance" prices exactly.
-   - "Draw No Bet" → use Bovada "Draw No Bet" prices exactly.
-2. Format Player Prop selections as: "Player Name Over/Under X.5 [stat]".
-3. Only estimate/simulate odds when NO real data exists from any source.
+CRITICAL HYBRID ENRICHMENT & ODDS MAPPING REQUIREMENTS:
+1. PRESERVE EXISTING REAL ODDS: For any selection and market_type already present in the "REAL live sportsbook odds" list above, you MUST preserve those EXACT prices. Do not modify or overwrite them.
+2. SIMULATE MISSING MARKETS: For any missing markets (such as Anytime Goalscorer, Corners, BTTS, Total Goals, Spread, Double Chance, Draw No Bet, Player Shots, Player Shots on Target, Player Tackles, Total Cards) that are NOT present in the "REAL live sportsbook odds" above, you must simulate and generate highly realistic, mathematically sound odds to complete a robust, diverse betting board.
+3. For Anytime Goalscorer, Corners, and Player Props, generate realistic selections grounded on the teams' rosters and recent form.
+4. Format Player Prop selections as: "Player Name Over/Under X.5 [stat]".
+5. Output a complete, unified list of all matches and odds (both the preserved real ones and your newly simulated/enriched ones).
 
 
 Format your output strictly as a JSON object matching this schema:
@@ -2670,16 +2689,8 @@ Format your output strictly as a JSON object matching this schema:
 }}
 
 Guidelines:
-1. Three Moneyline selections per match using Bovada exact prices.
-2. Two BTTS selections (Yes/No) using Bovada exact prices.
-3. Two Total Goals selections using the exact Bovada line and prices.
-4. Two Spread selections using the exact Bovada handicap and prices.
-5. Two Corners selections using the exact Bovada Total Corners line and prices.
-6. Anytime Goalscorer: output players from Bovada with exact prices.
-7. Player Shots, Player SOT, Player Tackles: output players and lines from Bovada with exact prices. Format: "Player Name Over/Under X.5 [stat]".
-8. Total Cards: output Bovada lines exactly.
-9. Double Chance, Draw No Bet: use Bovada prices exactly.
-10. Use integer American odds (EVEN → 100, +150 → 150, -110 → -110).
+1. Ensure every match has Moneyline, BTTS, Total Goals, Spread, Corners, and multiple Anytime Goalscorers/Player Props.
+2. Use integer American odds (EVEN → 100, +150 → 150, -110 → -110).
 """
             content = generate_content_with_fallback(api_key, prompt, json_mode=True)
             
@@ -2700,8 +2711,29 @@ Guidelines:
                     st.error(f"Failed to parse AI-generated odds: {e2}")
                     return
                 
-            discovered_matches = data.get("matches", [])
-            discovered_odds = data.get("odds", [])
+            gemini_matches = data.get("matches", [])
+            gemini_odds = data.get("odds", [])
+
+            if programmatic_success:
+                # Merge Gemini enriched data into existing programmatic data
+                for gm in gemini_matches:
+                    if not any(dm["match_id"] == gm["match_id"] for dm in discovered_matches):
+                        discovered_matches.append(gm)
+                    else:
+                        idx = next(i for i, dm in enumerate(discovered_matches) if dm["match_id"] == gm["match_id"])
+                        discovered_matches[idx] = gm
+                
+                for go in gemini_odds:
+                    match_key = (go["match_id"], go["market_type"], go["selection"])
+                    existing_idx = next((i for i, do in enumerate(discovered_odds) if (do["match_id"], do["market_type"], do["selection"]) == match_key), None)
+                    if existing_idx is not None:
+                        discovered_odds[existing_idx] = go
+                    else:
+                        discovered_odds.append(go)
+                print(f"[DEBUG] Successfully merged {len(gemini_odds)} Gemini enriched/simulated odds into programmatic odds.")
+            else:
+                discovered_matches = gemini_matches
+                discovered_odds = gemini_odds
         
         # Add shell matches for any started/skipped matches so they are not missing from DB
         for m in skipped_matches:
