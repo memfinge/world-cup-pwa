@@ -1279,16 +1279,16 @@ def _af_get(endpoint: str, params: dict) -> dict:
     return _af_get_1h(endpoint, str(sorted(params.items())), params)
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=14400)
 def _af_find_team_id(team_name: str) -> Optional[int]:
-    """Searches API-Football for a team by name and returns its integer ID."""
-    data = _af_get_1h("teams", str({"name": team_name, "league": _AF_WC_LEAGUE}),
+    """Searches API-Football for a team by name and returns its integer ID, cached for 4 hours."""
+    data = _af_get_4h("teams", str({"name": team_name, "league": _AF_WC_LEAGUE}),
                       {"name": team_name, "league": _AF_WC_LEAGUE, "season": _AF_WC_SEASON})
     teams = data.get("response", [])
     if teams:
         return teams[0]["team"]["id"]
     # Broad fallback — search without league filter
-    data2 = _af_get_1h("teams", str({"name": team_name}), {"name": team_name})
+    data2 = _af_get_4h("teams", str({"name": team_name}), {"name": team_name})
     teams2 = data2.get("response", [])
     if teams2:
         return teams2[0]["team"]["id"]
