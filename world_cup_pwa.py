@@ -4117,65 +4117,74 @@ def audit_pending_ledger(api_key: str) -> None:
             st.info("No pending ledger entries to audit.")
             return
 
-        settled_count = 0
-        for slip_data in pending_slips:
-            slip = LedgerEntry.model_validate(slip_data)
-            match_data = slip_data.get('matches')
-            
-            if not match_data or slip.match_id not in final_scores:
-                continue # Skip if match data is missing or match is not yet final
-
-            match = Match.model_validate(match_data)
-            final_score = final_scores[slip.match_id]
-            final_status = determine_settlement_status(slip, match, final_score, api_key)
-
-            if final_status in [LedgerStatus.WON, LedgerStatus.LOST, LedgerStatus.VOID]:
-                net_return = 0.0
-                if final_status == LedgerStatus.WON:
-                    if slip.market_type == "SGP":
-                        try:
-                            import json
-                            parlay_data = json.loads(slip.selection)
-                            legs = parlay_data.get("legs", [])
-                            
-                            total_multiplier = 1.0
-                            for leg in legs:
-                                leg_slip = LedgerEntry(
-                                    slip_id=f"leg-{leg.get('market_type')}",
-                                    match_id=slip.match_id,
-                                    market_type=leg.get("market_type", ""),
-                                    selection=leg.get("selection", ""),
-                                    base_odds=leg.get("base_odds", 100),
-                                    unit_risk=slip.unit_risk,
-                                    status=LedgerStatus.PENDING
-                                )
-                                status = determine_settlement_status(leg_slip, match, final_score, api_key)
-                                if status == LedgerStatus.WON:
-                                    odds = leg.get("base_odds", 100)
-                                    if odds > 0:
-                                        mult = (odds / 100.0) + 1.0
-                                    else:
-                                        mult = (100.0 / abs(odds)) + 1.0
-                                    total_multiplier *= mult
+        def _settle_single_slip(slip_data):
+            try:
+                slip = LedgerEntry.model_validate(slip_data)
+                match_data = slip_data.get('matches')
+                
+                if not match_data or slip.match_id not in final_scores:
+                    return None
+                    
+                match = Match.model_validate(match_data)
+                final_score = final_scores[slip.match_id]
+                final_status = determine_settlement_status(slip, match, final_score, api_key)
+                
+                if final_status in [LedgerStatus.WON, LedgerStatus.LOST, LedgerStatus.VOID]:
+                    net_return = 0.0
+                    if final_status == LedgerStatus.WON:
+                        if slip.market_type == "SGP":
+                            try:
+                                import json
+                                parlay_data = json.loads(slip.selection)
+                                legs = parlay_data.get("legs", [])
                                 
-                            net_return = slip.unit_risk * (total_multiplier - 1.0)
-                        except Exception as calc_err:
-                            print(f"[DEBUG] Error calculating SGP winnings: {calc_err}")
+                                total_multiplier = 1.0
+                                for leg in legs:
+                                    leg_slip = LedgerEntry(
+                                        slip_id=f"leg-{leg.get('market_type')}",
+                                        match_id=slip.match_id,
+                                        market_type=leg.get("market_type", ""),
+                                        selection=leg.get("selection", ""),
+                                        base_odds=leg.get("base_odds", 100),
+                                        unit_risk=slip.unit_risk,
+                                        status=LedgerStatus.PENDING
+                                    )
+                                    status = determine_settlement_status(leg_slip, match, final_score, api_key)
+                                    if status == LedgerStatus.WON:
+                                        odds = leg.get("base_odds", 100)
+                                        if odds > 0:
+                                            mult = (odds / 100.0) + 1.0
+                                        else:
+                                            mult = (100.0 / abs(odds)) + 1.0
+                                        total_multiplier *= mult
+                                    
+                                net_return = slip.unit_risk * (total_multiplier - 1.0)
+                            except Exception as calc_err:
+                                print(f"[DEBUG] Error calculating SGP winnings: {calc_err}")
+                                if slip.base_odds > 0: net_return = slip.unit_risk * (slip.base_odds / 100.0)
+                                else: net_return = slip.unit_risk * (100.0 / abs(slip.base_odds))
+                        else:
                             if slip.base_odds > 0: net_return = slip.unit_risk * (slip.base_odds / 100.0)
                             else: net_return = slip.unit_risk * (100.0 / abs(slip.base_odds))
-                    else:
-                        if slip.base_odds > 0: net_return = slip.unit_risk * (slip.base_odds / 100.0)
-                        else: net_return = slip.unit_risk * (100.0 / abs(slip.base_odds))
-                elif final_status == LedgerStatus.LOST:
-                    net_return = -slip.unit_risk
-                elif final_status == LedgerStatus.VOID:
-                    net_return = 0.0
+                    elif final_status == LedgerStatus.LOST:
+                        net_return = -slip.unit_risk
+                    elif final_status == LedgerStatus.VOID:
+                        net_return = 0.0
+                        
+                    supabase.table("ledger").update({
+                        "status": final_status.value,
+                        "net_return": round(net_return, 2)
+                    }).eq("slip_id", slip.slip_id).execute()
+                    return slip.slip_id
+            except Exception as slip_err:
+                print(f"[DEBUG] Error settling slip {slip_data.get('slip_id')}: {slip_err}")
+            return None
 
-                supabase.table("ledger").update({
-                    "status": final_status.value,
-                    "net_return": round(net_return, 2)
-                }).eq("slip_id", slip.slip_id).execute()
-                settled_count += 1
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(len(pending_slips), 5)) as exec_ledger:
+            results = list(exec_ledger.map(_settle_single_slip, pending_slips))
+            
+        settled_count = len([r for r in results if r is not None])
 
         if settled_count > 0:
             st.success(f"Audited and settled {settled_count} pending slip(s).")
