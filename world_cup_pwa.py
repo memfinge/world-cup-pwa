@@ -4245,10 +4245,13 @@ def execute_sync_pipeline():
                 m for m in all_matches
                 if to_central_time(m.kickoff_time)[0].date() == target_date
             ]
-            # Filter out matches that already have confirmed lineups to avoid redundant API/LLM calls
+            
+            # Filter out matches that already have confirmed lineups OR have already kicked off (since lineups are no longer actionable)
+            now_utc = datetime.now(timezone.utc)
             matches_to_fetch = [
                 m for m in target_matches
                 if not (m.lineup_status == LineupStatus.CONFIRMED and len(m.home_lineup) >= 11)
+                and (m.kickoff_time.replace(tzinfo=timezone.utc) > now_utc if m.kickoff_time.tzinfo is None else m.kickoff_time > now_utc)
             ]
             lineup_duration = 0.0
             if matches_to_fetch:
@@ -4259,7 +4262,7 @@ def execute_sync_pipeline():
                 lineup_duration = time.perf_counter() - lineup_start
                 st.write(f"⏱️ **Lineup Discovery Duration:** {lineup_duration:.2f} seconds")
             else:
-                st.info(f"ℹ️ All matches for {target_date} already have confirmed lineups — lineup step skipped.")
+                st.info(f"ℹ️ Lineup step skipped: no upcoming matches on {target_date} require lineup updates.")
 
             # Reset conviction picks so user can run fresh research on newly synced matches
             st.session_state.conviction_picks = {}
