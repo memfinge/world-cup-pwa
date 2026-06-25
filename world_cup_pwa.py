@@ -563,6 +563,12 @@ def fetch_and_store_lineups(match_objects: List["Match"], api_key: str) -> None:
         if match.lineup_status == LineupStatus.CONFIRMED and len(match.home_lineup) >= 11:
             return
 
+        # Fast path check: if match kickoff has already passed, we only want confirmed lineups
+        # from official feeds. Do NOT run slow web scraping or AI projections for matches that have already started/finished
+        # as lineups are no longer actionable for pre-game projections.
+        now_utc = datetime.now(timezone.utc)
+        has_started = match.kickoff_time.replace(tzinfo=timezone.utc) <= now_utc if match.kickoff_time.tzinfo is None else match.kickoff_time <= now_utc
+
         home_lineup: List[str] = []
         away_lineup: List[str] = []
         new_status = LineupStatus.PROJECTED
@@ -586,7 +592,7 @@ def fetch_and_store_lineups(match_objects: List["Match"], api_key: str) -> None:
                         headers=headers,
                         params={"league": _AF_WC_LEAGUE, "season": _AF_WC_SEASON,
                                 "team": home_id, "date": match_date},
-                        timeout=10
+                        timeout=5
                     )
                     if fx_resp.status_code == 200:
                         fx_list = fx_resp.json().get("response", [])
@@ -604,7 +610,7 @@ def fetch_and_store_lineups(match_objects: List["Match"], api_key: str) -> None:
                                 f"{_AF_BASE}/fixtures/lineups",
                                 headers=headers,
                                 params={"fixture": fx_id},
-                                timeout=10
+                                timeout=5
                             )
                             if lu_resp.status_code == 200:
                                 lu_data = lu_resp.json().get("response", [])
@@ -625,9 +631,9 @@ def fetch_and_store_lineups(match_objects: List["Match"], api_key: str) -> None:
 
         # -------------------------------------------------------------------
         # TIER 2: Web scrape (DuckDuckGo / Yahoo News)
-        # Used when API-Football hasn't announced the lineup yet.
+        # Bypassed entirely for started matches to keep manual sync fast.
         # -------------------------------------------------------------------
-        if len(home_lineup) < 11 or len(away_lineup) < 11:
+        if (len(home_lineup) < 11 or len(away_lineup) < 11) and not has_started:
             try:
                 scraped = scrape_confirmed_lineup(match.home_team, match.away_team)
                 if scraped and len(scraped.get("home_lineup", [])) >= 8:
@@ -645,9 +651,9 @@ def fetch_and_store_lineups(match_objects: List["Match"], api_key: str) -> None:
 
         # -------------------------------------------------------------------
         # TIER 3: Gemini AI projection
-        # Always runs if either lineup is still incomplete — guarantees non-empty result.
+        # Bypassed entirely for started matches to keep manual sync fast.
         # -------------------------------------------------------------------
-        if (len(home_lineup) < 11 or len(away_lineup) < 11) and api_key:
+        if (len(home_lineup) < 11 or len(away_lineup) < 11) and api_key and not has_started:
             try:
                 gen = generate_projected_lineups(match.home_team, match.away_team, api_key)
                 if gen:
@@ -663,8 +669,9 @@ def fetch_and_store_lineups(match_objects: List["Match"], api_key: str) -> None:
             except Exception as gen_err:
                 print(f"[DEBUG] AI lineup generation failed for {match.match_id}: {gen_err}")
 
+        # If a started match had no confirmed lineups in API-Football, we do not write dummy/stale data.
         if not home_lineup and not away_lineup:
-            print(f"[DEBUG] `{match.home_team} vs {match.away_team}`: all lineup sources failed.")
+            print(f"[DEBUG] `{match.home_team} vs {match.away_team}`: no lineups found (started match lineup bypass).")
             return
 
         # --- Persist to Supabase ---
@@ -683,7 +690,7 @@ def fetch_and_store_lineups(match_objects: List["Match"], api_key: str) -> None:
             print(f"[DEBUG] Failed to store lineup for {match.match_id}: {db_err}")
 
     # Run in parallel using thread pool
-    with ThreadPoolExecutor(max_workers=min(len(match_objects), 5)) as executor:
+    with ThreadPoolExecutor(max_workers=min(len(match_objects), 3)) as executor:
         executor.map(_fetch_single_match_lineup, match_objects)
 
     # Main thread UI notification report
@@ -4197,29 +4204,41 @@ def audit_pending_ledger(api_key: str) -> None:
 
 def execute_sync_pipeline():
     """
-    Main on-demand execution chain.
+    Main on-demand execution chain with performance profiling.
     """
+    import time
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
     with st.status("Executing sync pipeline...", expanded=True) as status:
         try:
+            total_start = time.perf_counter()
             api_key = st.session_state.get("gemini_api_key") or os.environ.get("GEMINI_API_KEY")
 
             # Step 0: Audit ledger first (as per rules)
             status.update(label="Auditing pending ledger entries...")
+            st.write("⏳ Auditing pending ledger entries...")
+            audit_start = time.perf_counter()
             audit_pending_ledger(api_key)
+            audit_duration = time.perf_counter() - audit_start
+            st.write(f"⏱️ **Ledger Audit Duration:** {audit_duration:.2f} seconds")
 
             # Step 1: Scrape active lineups and update the database
             status.update(label="Discovering matches and odds...")
+            st.write("⏳ Discovering matches and odds...")
+            odds_start = time.perf_counter()
             target_date = st.session_state.get("sync_date", date(2026, 6, 19))
             odds_api_key = st.session_state.get("odds_api_key") or os.environ.get("ODDS_API_KEY", "")
             scrape_and_update_match_data(api_key, target_date, odds_api_key)
+            odds_duration = time.perf_counter() - odds_start
+            st.write(f"⏱️ **Match & Odds Discovery Duration:** {odds_duration:.2f} seconds")
 
             # Step 2: Fetch all matches from DB
             status.update(label="Fetching matches from database...")
+            db_start = time.perf_counter()
             matches_response = supabase.table("matches").select("*").execute()
             all_matches = [Match.model_validate(m) for m in matches_response.data]
             all_matches.sort(key=lambda m: m.kickoff_time)
             st.session_state.all_matches = all_matches
+            db_duration = time.perf_counter() - db_start
 
             # Step 2b: Fetch lineups for matches on the synced date
             target_matches = [
@@ -4231,18 +4250,23 @@ def execute_sync_pipeline():
                 m for m in target_matches
                 if not (m.lineup_status == LineupStatus.CONFIRMED and len(m.home_lineup) >= 11)
             ]
+            lineup_duration = 0.0
             if matches_to_fetch:
                 status.update(label=f"Fetching lineups for {len(matches_to_fetch)} match(es) on {target_date}...")
                 st.write(f"**⚽ Lineup Discovery ({target_date})**")
+                lineup_start = time.perf_counter()
                 fetch_and_store_lineups(matches_to_fetch, api_key)
+                lineup_duration = time.perf_counter() - lineup_start
+                st.write(f"⏱️ **Lineup Discovery Duration:** {lineup_duration:.2f} seconds")
             else:
                 st.info(f"ℹ️ All matches for {target_date} already have confirmed lineups — lineup step skipped.")
-
 
             # Reset conviction picks so user can run fresh research on newly synced matches
             st.session_state.conviction_picks = {}
 
-            status.update(label="Sync complete. Ready to render UI.", state="complete")
+            total_duration = time.perf_counter() - total_start
+            st.write(f"🏁 **Total Sync Pipeline Execution Time:** {total_duration:.2f} seconds")
+            status.update(label=f"Sync complete in {total_duration:.2f}s. Ready to render UI.", state="complete")
         except Exception as e:
             status.update(label=f"Pipeline failed: {e}", state="error")
 
