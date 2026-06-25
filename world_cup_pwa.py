@@ -2156,17 +2156,23 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                     if dg_desc == "Game Lines":
                         for market in dg.get("markets", []):
                             m_desc = market.get("description", "")
+                            # Skip 1st Half / 2nd Half specific markets at game line level
+                            if "1st Half" in m_desc or "2nd Half" in m_desc:
+                                continue
                             outcomes = []
                             for out in market.get("outcomes", []):
+                                sel_desc = out.get("description", "")
+                                if " - 1H" in sel_desc or " - 2H" in sel_desc:
+                                    continue
                                 outcomes.append({
-                                    "selection": out.get("description"),
+                                    "selection": sel_desc,
                                     "price": out.get("price", {}).get("american")
                                 })
-                            if m_desc == "3-Way Moneyline":
+                            if m_desc == "3-Way Moneyline" and outcomes:
                                 bovada_odds_summary["Moneyline"] = outcomes
-                            elif m_desc == "Total":
+                            elif m_desc == "Total" and outcomes:
                                 bovada_odds_summary["Total Goals"] = outcomes
-                            elif m_desc == "Goal Spread":
+                            elif m_desc == "Goal Spread" and outcomes:
                                 bovada_odds_summary["Spread"] = outcomes
 
                     # --- Goalscorer: Anytime, First, 2+, Hat Trick, Header ---
@@ -2265,14 +2271,19 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                         corners_data = {}
                         for market in dg.get("markets", []):
                             m_desc = market.get("description", "")
+                            if "1st Half" in m_desc or "2nd Half" in m_desc:
+                                continue
                             outcomes = []
                             for out in market.get("outcomes", []):
+                                sel_desc = out.get("description", "")
+                                if " - 1H" in sel_desc or " - 2H" in sel_desc:
+                                    continue
                                 outcomes.append({
-                                    "selection": out.get("description"),
+                                    "selection": sel_desc,
                                     "price": out.get("price", {}).get("american")
                                 })
                             corners_data[m_desc] = outcomes
-                        if "Total Corners" in corners_data:
+                        if "Total Corners" in corners_data and corners_data["Total Corners"]:
                             bovada_odds_summary["Corners"] = corners_data["Total Corners"]
                         bovada_odds_summary["Corners Markets"] = corners_data
 
@@ -2282,32 +2293,40 @@ def scrape_and_update_match_data(api_key: str, target_date, odds_api_key: str = 
                             m_desc = market.get("description", "")
                             outcomes = []
                             for out in market.get("outcomes", []):
+                                sel_desc = out.get("description", "")
+                                if " - 1H" in sel_desc or " - 2H" in sel_desc:
+                                    continue
                                 outcomes.append({
-                                    "selection": out.get("description"),
+                                    "selection": sel_desc,
                                     "price": out.get("price", {}).get("american")
                                 })
-                            if m_desc == "Total Cards Under/Over":
+                            if m_desc == "Total Cards Under/Over" and outcomes:
                                 bovada_odds_summary["Total Cards"] = outcomes
-                            elif m_desc == "To be Shown a Card":
+                            elif m_desc == "To be Shown a Card" and outcomes:
                                 bovada_odds_summary["Player Cards"] = outcomes
 
                     # --- Game Props: BTTS, Double Chance, Draw No Bet, Correct Score ---
                     elif dg_desc == "Game Props":
                         for market in dg.get("markets", []):
                             m_desc = market.get("description", "")
+                            if "1st Half" in m_desc or "2nd Half" in m_desc:
+                                continue
                             outcomes = []
                             for out in market.get("outcomes", []):
+                                sel_desc = out.get("description", "")
+                                if " - 1H" in sel_desc or " - 2H" in sel_desc:
+                                    continue
                                 outcomes.append({
-                                    "selection": out.get("description"),
+                                    "selection": sel_desc,
                                     "price": out.get("price", {}).get("american")
                                 })
-                            if m_desc == "Both Teams To Score":
+                            if m_desc == "Both Teams To Score" and outcomes:
                                 bovada_odds_summary["Both Teams to Score"] = outcomes
-                            elif m_desc == "Double Chance":
+                            elif m_desc == "Double Chance" and outcomes:
                                 bovada_odds_summary["Double Chance"] = outcomes
-                            elif m_desc == "Draw No Bet":
+                            elif m_desc == "Draw No Bet" and outcomes:
                                 bovada_odds_summary["Draw No Bet"] = outcomes
-                            elif m_desc == "Correct Score":
+                            elif m_desc == "Correct Score" and outcomes:
                                 bovada_odds_summary["Correct Score"] = outcomes
 
                     # --- Combo Props: Result + BTTS, Result + O/U ---
