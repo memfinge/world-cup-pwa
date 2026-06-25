@@ -4212,18 +4212,22 @@ def execute_sync_pipeline():
             all_matches.sort(key=lambda m: m.kickoff_time)
             st.session_state.all_matches = all_matches
 
-            # Step 2b: Fetch lineups only for unstarted matches on the synced date
-            now_utc = datetime.now(timezone.utc)
+            # Step 2b: Fetch lineups for matches on the synced date
             target_matches = [
                 m for m in all_matches
-                if to_central_time(m.kickoff_time)[0].date() == target_date and m.kickoff_time > now_utc
+                if to_central_time(m.kickoff_time)[0].date() == target_date
             ]
-            if target_matches:
-                status.update(label=f"Fetching lineups for {len(target_matches)} upcoming match(es) on {target_date}...")
+            # Filter out matches that already have confirmed lineups to avoid redundant API/LLM calls
+            matches_to_fetch = [
+                m for m in target_matches
+                if not (m.lineup_status == LineupStatus.CONFIRMED and len(m.home_lineup) >= 11)
+            ]
+            if matches_to_fetch:
+                status.update(label=f"Fetching lineups for {len(matches_to_fetch)} match(es) on {target_date}...")
                 st.write(f"**⚽ Lineup Discovery ({target_date})**")
-                fetch_and_store_lineups(target_matches, api_key)
+                fetch_and_store_lineups(matches_to_fetch, api_key)
             else:
-                st.info(f"ℹ️ No upcoming matches found for {target_date} — lineup step skipped.")
+                st.info(f"ℹ️ All matches for {target_date} already have confirmed lineups — lineup step skipped.")
 
 
             # Reset conviction picks so user can run fresh research on newly synced matches
