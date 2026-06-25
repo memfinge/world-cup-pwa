@@ -470,17 +470,18 @@ def scrape_confirmed_lineup(home_team: str, away_team: str) -> Optional[Dict[str
     queries = [
         f"{home_team} vs {away_team} confirmed starting lineup XI today 2026 World Cup",
         f"{home_team} {away_team} starting 11 lineup announced official",
+        f"{home_team} vs {away_team} predicted starting lineup roster",
     ]
 
     raw_text = ""
     for query in queries:
         try:
-            from duckduckgo_search import DDGS
-            with DDGS(timeout=3) as ddgs:
+            from ddgs import DDGS
+            with DDGS() as ddgs:
                 results = list(ddgs.text(query, max_results=5))
                 for r in results:
                     raw_text += f" {r.get('title', '')} {r.get('body', '')}"
-            if len(raw_text.strip()) > 200:
+            if len(raw_text.strip()) > 300:
                 break
         except Exception:
             pass
@@ -500,48 +501,45 @@ def scrape_confirmed_lineup(home_team: str, away_team: str) -> Optional[Dict[str
         except Exception:
             pass
 
-    # Keyword check — only proceed if page actually discusses a confirmed lineup
+    # Keyword check — proceed if page discusses starting lineups
     confirmed_keywords = [
         "starting xi", "starting lineup", "confirmed lineup", "line-up",
-        "starting eleven", "named lineup", "official lineup", "announced lineup"
+        "starting eleven", "named lineup", "official lineup", "announced lineup",
+        "predicted lineup", "possible xi", "projected starting", "roster"
     ]
     text_lower = raw_text.lower()
     if not any(kw in text_lower for kw in confirmed_keywords):
-        return None  # No confirmed lineup language found
+        return None  # No lineup language found
 
-    # Extract plausible player name tokens: "Firstname Lastname" capitalised pairs,
-    # or single-word names like "Musiala", "Ronaldo", "Mbappe"
+    # Extract player name tokens
     name_pattern = re.compile(r'\b([A-Z][a-záéíóúãçñüàèìòùâêîôûäëïöü]+(?:\s+[A-Z][a-záéíóúãçñüàèìòùâêîôûäëïöü]+){0,2})\b')
     candidates = name_pattern.findall(raw_text)
 
-    # Filter out obvious false positives (countries, month names, common words)
+    # Filter out obvious false positives
     stop_words = {
-        home_team, away_team, "World", "Cup", "FIFA", "Match", "Today", "Group",
+        home_team, away_team, "World", "Cup", "Group", "Match", "Today",
         "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
         "January", "February", "March", "April", "May", "June", "July",
         "August", "September", "October", "November", "December",
-        "Starting", "Lineup", "Confirmed", "Official", "Preview"
+        "Starting", "Lineup", "Confirmed", "Official", "Preview", "Predicted", "Projected"
     }
-    # Only keep tokens that appear at least twice (more likely to be actual players)
+    
     from collections import Counter
     counts = Counter(candidates)
-    players = [name for name, cnt in counts.most_common(30) if cnt >= 1 and name not in stop_words and len(name) > 3]
+    players = [name for name, cnt in counts.most_common(30) if name not in stop_words and len(name) > 3]
 
-    if len(players) < 8:
-        return None  # Not enough names found to constitute a real lineup
-
-    # Split heuristically: first ~11 into home, next ~11 into away
-    # (Web snippets rarely split cleanly; we return what we have and let AI fill gaps)
-    home_players = players[:11]
-    away_players = players[11:22]
-
-    if len(home_players) < 8:
+    if len(players) < 6:
         return None
 
+    # Split: first half to home, second half to away
+    midpoint = len(players) // 2
+    home_players = players[:midpoint]
+    away_players = players[midpoint:]
+
     return {
-        "home_lineup": home_players,
-        "away_lineup": away_players,
-        "confirmed": len(away_players) >= 8
+        "home_lineup": home_players[:11],
+        "away_lineup": away_players[:11],
+        "confirmed": "confirmed" in text_lower or "official" in text_lower
     }
 
 
